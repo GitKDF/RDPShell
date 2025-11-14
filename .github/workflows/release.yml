@@ -35,7 +35,7 @@ jobs:
       - name: Build framework-dependent exe
         run: |
           #dotnet publish -c Release -r win-x64 --self-contained false -o ../out `
-          dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ../out `
+          dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./out `
             /p:InformationalVersion=${{ github.ref_name }}
 
       - name: Upload release asset
