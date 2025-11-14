@@ -5,7 +5,7 @@ using System.Reflection;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
-using System.Diagnostics;
+using System.Diagnostics; // Required for Stopwatch
 using System.Runtime.InteropServices; // Required for P/Invoke (DllImport, Marshal, GCHandle)
 using System.ComponentModel; // Required for Win32Exception
 using System.Text; // Required for StringBuilder
@@ -40,7 +40,7 @@ public class RDPShell
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
     
-    // NEW: Synchronous key state check
+    // Synchronous key state check (used for startup detection)
     [DllImport("user32.dll")]
     private static extern short GetKeyState(int vKey); 
 
@@ -108,11 +108,31 @@ public class RDPShell
     // Standard Windows Dialog Class Name
     private const string StandardDialogClassName = "#32770"; 
 
+    // Constants for the persistent key check
+    private const int CHECK_DURATION_MS = 500; 
+    private const int CHECK_INTERVAL_MS = 25;  
+
     private static bool IsControlKeyDown()
     {
-        // FIX: Switched from GetAsyncKeyState to GetKeyState for more reliable startup detection.
-        // GetKeyState returns a negative value if the high-order bit is set (key is down).
-        return (GetKeyState(VK_LCONTROL) < 0) || (GetKeyState(VK_RCONTROL) < 0);
+        // FIX: Implement persistent check loop to catch the keypress during the critical shell startup window.
+        LogDebugMessage($"Starting persistent Ctrl key check for {CHECK_DURATION_MS}ms...");
+        Stopwatch timer = Stopwatch.StartNew();
+
+        while (timer.ElapsedMilliseconds < CHECK_DURATION_MS)
+        {
+            // GetKeyState returns a negative value if the high-order bit is set (key is down).
+            if ((GetKeyState(VK_LCONTROL) < 0) || (GetKeyState(VK_RCONTROL) < 0))
+            {
+                LogDebugMessage("Ctrl key detected during persistent check.");
+                return true;
+            }
+
+            // Wait briefly to avoid high CPU usage
+            Thread.Sleep(CHECK_INTERVAL_MS);
+        }
+        
+        LogDebugMessage("Ctrl key NOT detected after persistent check.");
+        return false;
     }
 
     // Helper function to check if the current user session is locked.
