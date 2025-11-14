@@ -38,7 +38,7 @@ public class RDPShell
     
     // User32 imports for Keyboard state and window manipulation
     [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int vKey);
+    private static extern short GetAsyncKeyState(int vKey); // Now using GetAsyncKeyState
     
     // Synchronous key state check (used for startup detection)
     [DllImport("user32.dll")]
@@ -102,30 +102,29 @@ public class RDPShell
     }
     
     // Virtual Key Codes (VKey) and Windows Messages
-    private const int VK_LCONTROL = 0xA2; // Explicit Left Control
-    private const int VK_RCONTROL = 0xA3; // Explicit Right Control
+    private const int VK_RETURN = 0x0D; // Enter Key
     private const uint WM_CLOSE = 0x0010;
     // Standard Windows Dialog Class Name
     private const string StandardDialogClassName = "#32770"; 
 
     // Constants for the persistent key check
-    private const int CHECK_DURATION_MS = 5000; //Test 5 sec detection window
+    private const int CHECK_DURATION_MS = 500; // 500ms persistent check
     private const int CHECK_INTERVAL_MS = 25;  
     private const short KEY_DOWN_BIT = unchecked((short)0x8000); // The high-order bit check
 
-    private static bool IsControlKeyDown()
+    private static bool IsEnterKeyDown()
     {
         // Use the high-order bit check for maximum P/Invoke accuracy
-        LogDebugMessage($"Starting persistent Ctrl key check for {CHECK_DURATION_MS}ms (using 0x8000 bit check)...");
+        LogDebugMessage($"Starting persistent Enter key check for {CHECK_DURATION_MS}ms (using GetAsyncKeyState and 0x8000 bit check)...");
         Stopwatch timer = Stopwatch.StartNew();
 
         while (timer.ElapsedMilliseconds < CHECK_DURATION_MS)
         {
-            // Check if the high-order bit of the GetKeyState result is set.
-            if ((GetKeyState(VK_LCONTROL) & KEY_DOWN_BIT) == KEY_DOWN_BIT || 
-                (GetKeyState(VK_RCONTROL) & KEY_DOWN_BIT) == KEY_DOWN_BIT)
+            // Check if the high-order bit of the GetAsyncKeyState result is set.
+            // This tells us the key is CURRENTLY DOWN.
+            if ((GetAsyncKeyState(VK_RETURN) & KEY_DOWN_BIT) == KEY_DOWN_BIT)
             {
-                LogDebugMessage("Ctrl key detected during persistent check.");
+                LogDebugMessage("Enter key detected during persistent check.");
                 return true;
             }
 
@@ -133,7 +132,7 @@ public class RDPShell
             Thread.Sleep(CHECK_INTERVAL_MS);
         }
         
-        LogDebugMessage("Ctrl key NOT detected after persistent check.");
+        LogDebugMessage("Enter key NOT detected after persistent check.");
         return false;
     }
 
@@ -186,10 +185,10 @@ Install Path: {InstallFolderPath}
 User: {Environment.UserName}
 
 Primary Function (On Login):
-1. The program checks if the Control (Ctrl) key is being held down.
-2. If Ctrl is held: It requires administrative credentials. If accepted, it launches 
+1. The program checks if the **Enter** key is being held down.
+2. If Enter is held: It requires administrative credentials. If accepted, it launches 
    the default Windows shell ({DefaultShell}). If canceled, it logs off.
-3. If Ctrl is NOT held: It searches for an RDP file named 'RDPShell - *.rdp' 
+3. If Enter is NOT held: It searches for an RDP file named 'RDPShell - *.rdp' 
    in the install folder and launches the Remote Desktop Client (mstsc.exe) 
    using that file. If no RDP file is found, it logs off.
 
@@ -239,12 +238,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
         try
         {
-            // 1. Conditional Launch based on Ctrl key state
-            if (IsControlKeyDown())
+            // 1. Conditional Launch based on Enter key state
+            if (IsEnterKeyDown())
             {
-                LogDebugMessage("Ctrl key detected. Attempting admin credential check.");
+                LogDebugMessage("Enter key detected. Attempting admin credential check.");
                 
-                // Ctrl is pressed - force credential check before launching desktop
+                // Enter is pressed - force credential check before launching desktop
                 MessageBox.Show(
                     "Attempting to launch the desktop environment. You must provide administrative credentials to proceed.", 
                     AppName, 
@@ -267,8 +266,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
             else
             {
-                // Ctrl is not pressed (RDP Mode)
-                LogDebugMessage("Ctrl key not detected. Attempting RDP mode.");
+                // Enter is not pressed (RDP Mode)
+                LogDebugMessage("Enter key not detected. Attempting RDP mode.");
                 
                 string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell - *.rdp", SearchOption.TopDirectoryOnly);
 
