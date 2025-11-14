@@ -16,6 +16,24 @@ using System.Text; // Required for StringBuilder
 
 public class RDPShell
 {
+    // --- LOGGING HELPER ---
+    // Log file path in the user's profile directory.
+    private static readonly string LogFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "RDPShell.log");
+
+    private static void LogDebugMessage(string message)
+    {
+        try
+        {
+            // Appends the current time and the message to the log file.
+            File.AppendAllText(LogFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}{Environment.NewLine}");
+        }
+        catch (Exception ex)
+        {
+            // If logging fails (e.g., permissions), we capture the failure but don't crash the main app.
+            Debug.WriteLine($"Logging failed: {ex.Message}");
+        }
+    }
+    
     // --- NATIVE IMPORTS (P/Invoke) ---
     
     // User32 imports for Keyboard state and window manipulation
@@ -103,7 +121,7 @@ public class RDPShell
         {
             try
             {
-                // WTS_CONNECTSTATE_CLASS is an int (4 bytes)
+                // CS8605 fixed by assuming non-null after WTSQuerySessionInformation success
                 WTS_CONNECTSTATE_CLASS state = (WTS_CONNECTSTATE_CLASS)Marshal.ReadInt32(pBuffer);
                 
                 // When a local console session is locked (Win+L), it often reports as WTSDisconnected.
@@ -131,7 +149,7 @@ public class RDPShell
     private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection"; 
 
     
-    // Multi-line text for the Readme file. Changed from 'const' to 'static readonly' to allow runtime initialization.
+    // Multi-line text for the Readme file.
     private static readonly string ReadmeFileText = 
 $@"--- {AppName} Readme ---
 This utility has been installed as your custom Windows Shell.
@@ -157,23 +175,38 @@ Note: You must log off and log back in for changes to the shell to take effect."
     [STAThread] // Required for System.Windows.Forms.MessageBox
     public static void Main(string[] args)
     {
-        // Check if the application is running in 'Shell Mode' via the flag
-        if (args.Length > 0 && args[0].Equals(ShellFlag, StringComparison.OrdinalIgnoreCase))
+        // Add a global try/catch to ensure we can log or display an error if the app fails early.
+        try 
         {
-            // PART 1: SHELL MODE (Launched by Winlogon)
-            RunAsShell();
+            LogDebugMessage($"Application started. Arguments: {string.Join(" ", args)}");
+            
+            // Check if the application is running in 'Shell Mode' via the flag
+            if (args.Length > 0 && args[0].Equals(ShellFlag, StringComparison.OrdinalIgnoreCase))
+            {
+                // PART 1: SHELL MODE (Launched by Winlogon)
+                RunAsShell();
+            }
+            else
+            {
+                // PART 2: INSTALLER/UNINSTALLER MODE (Interactive)
+                CheckAndManageInstallation();
+            }
         }
-        else
+        catch (Exception ex)
         {
-            // PART 2: INSTALLER/UNINSTALLER MODE (Interactive)
-            CheckAndManageInstallation();
+            // Fallback for unhandled exceptions outside of core logic
+            LogDebugMessage($"FATAL UNHANDLED EXCEPTION: {ex}");
+            // Display message box as a last resort
+            MessageBox.Show($"FATAL ERROR: An unhandled exception occurred.\n\nDetails written to {LogFilePath}", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
     // --- SHELL MODE LOGIC ---
     private static void RunAsShell()
     {
-        Process subShellProcess = null;
+        LogDebugMessage("Entering RunAsShell mode.");
+        
+        Process? subShellProcess = null; // Changed to nullable
         bool rdpMode = false; // Flag to track if we launched mstsc.exe
 
         try
@@ -181,6 +214,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
             // 1. Conditional Launch based on Ctrl key state
             if (IsControlKeyDown())
             {
+                LogDebugMessage("Ctrl key detected. Attempting admin credential check.");
+                
                 // Ctrl is pressed - force credential check before launching desktop
                 MessageBox.Show(
                     "Attempting to launch the desktop environment. You must provide administrative credentials to proceed.", 
@@ -191,11 +226,13 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
                 if (AttemptAdminCredentialCheck())
                 {
+                    LogDebugMessage($"Admin check passed. Launching {DefaultShell}.");
                     // Credentials provided successfully (UAC accepted)
                     subShellProcess = Process.Start(DefaultShell);
                 }
                 else
                 {
+                    LogDebugMessage("Admin check failed or canceled. Logging off.");
                     // Credentials check failed (UAC cancelled or failure)
                     MessageBox.Show("Administrative credential check failed or was canceled. Exiting user session now.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Stop);
                 }
@@ -203,16 +240,20 @@ Note: You must log off and log back in for changes to the shell to take effect."
             else
             {
                 // Ctrl is not pressed (RDP Mode)
+                LogDebugMessage("Ctrl key not detected. Attempting RDP mode.");
+                
                 string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell - *.rdp", SearchOption.TopDirectoryOnly);
 
                 if (rdpFiles.Length == 1)
                 {
+                    LogDebugMessage($"Found single RDP file: {rdpFiles[0]}. Launching mstsc.exe.");
                     // Found exactly one RDP file
                     subShellProcess = LaunchRDP(rdpFiles[0]);
                     rdpMode = true;
                 }
                 else if (rdpFiles.Length > 1)
                 {
+                    LogDebugMessage($"Found multiple RDP files. Using: {rdpFiles[0]}.");
                     // Found multiple RDP files (use the first one and warn)
                     MessageBox.Show(
                         $"Multiple RDP files found. Using the first one: {Path.GetFileName(rdpFiles[0])}. Launching mstsc.exe...",
@@ -225,6 +266,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
                 else
                 {
+                    LogDebugMessage("No RDP file found. Logging off.");
                     // No RDP file found - Log off immediately (per user request)
                     MessageBox.Show(
                         $"No RDP file found in '{InstallFolderPath}' matching 'RDPShell - *.rdp'. Exiting user session now.",
@@ -237,15 +279,18 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         catch (Exception ex)
         {
+            LogDebugMessage($"CRITICAL ERROR during shell launch: {ex.Message}");
             // Catch errors during launch (e.g., file not found, permission issues)
             MessageBox.Show($"Critical Error during sub-shell launch: {ex.Message}. Logging off now.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            Process.Start("shutdown.exe", "/l /f"); // Force logoff
+            Process.Start("shutdown.exe", "/l /f"); 
             return; 
         }
 
         // 2. Monitor the Subshell Process (Only if a process was started)
         if (subShellProcess != null)
         {
+            LogDebugMessage($"Monitoring subshell process ID: {subShellProcess.Id}");
+            
             // Use an active monitoring loop instead of blocking WaitForExit()
             while (true)
             {
@@ -269,9 +314,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 // Wait briefly to avoid high CPU usage
                 Thread.Sleep(200);
             }
+            
+            LogDebugMessage("Subshell process exited.");
         }
         
         // 3. Exit the shell process. This signals the OS that the user session is over.
+        LogDebugMessage("Exiting application.");
         Application.Exit();
     }
     
@@ -281,7 +329,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // AND if it is a standard Windows dialog box (#32770).
     private static bool EnumWindowCallback(IntPtr hWnd, IntPtr lParam)
     {
-        uint ownerProcessId = (uint)GCHandle.FromIntPtr(lParam).Target;
+        // Use the null-forgiving operator '!' as we know the target is a non-null uint (process ID).
+        uint ownerProcessId = (uint)GCHandle.FromIntPtr(lParam).Target!; 
         uint windowProcessId;
         
         // Get the process ID of the window
@@ -386,19 +435,24 @@ Note: You must log off and log back in for changes to the shell to take effect."
         // Use ProcessStartInfo to specify mstsc.exe and the arguments
         ProcessStartInfo psi = new ProcessStartInfo("mstsc.exe", $"\"{rdpFilePath}\"");
         psi.UseShellExecute = true; // Use shell execution for system commands like mstsc
-        return Process.Start(psi);
+        // Use the null-forgiving operator '!' to assert Process.Start will return non-null on success.
+        return Process.Start(psi)!; 
     }
 
 
     // --- INSTALLER/UNINSTALLER LOGIC ---
     private static void CheckAndManageInstallation()
     {
+        LogDebugMessage("Entering CheckAndManageInstallation mode.");
+        
         string currentShellValue = GetUserShellRegistryValue();
         string requiredShellValue = $"\"{TargetExePath}\" {ShellFlag}";
         
         // 1. CHECK FOR UNINSTALL
         if (currentShellValue.Equals(requiredShellValue, StringComparison.OrdinalIgnoreCase))
         {
+            LogDebugMessage("Installation detected. Prompting for uninstall.");
+            
             DialogResult result = MessageBox.Show(
                 $"The {AppName} shell is currently installed for user {Environment.UserName}. Would you like to UNINSTALL {AppName} and revert to the default shell?",
                 $"{AppName} Uninstall Detected",
@@ -414,6 +468,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
 
         // 2. CHECK FOR INSTALL
+        LogDebugMessage("Installation not detected. Prompting for install.");
+        
         DialogResult installResult = MessageBox.Show(
             $"The {AppName} shell is currently NOT installed for user {Environment.UserName}. Would you like to INSTALL {AppName} as your default shell?",
             $"{AppName} Install Prompt",
@@ -433,17 +489,22 @@ Note: You must log off and log back in for changes to the shell to take effect."
     {
         try
         {
-            string currentExePath = Assembly.GetExecutingAssembly().Location;
+            LogDebugMessage("Starting installation process.");
+            
+            // Use '!' to assert Assembly.GetExecutingAssembly().Location is non-null.
+            string currentExePath = Assembly.GetExecutingAssembly().Location!; 
             
             // 2a. Ensure the installation folder exists
             if (!Directory.Exists(InstallFolderPath))
             {
+                LogDebugMessage($"Creating install directory: {InstallFolderPath}");
                 Directory.CreateDirectory(InstallFolderPath);
             }
 
             // 2b. Copy the executable file if not running from the target path
             if (!currentExePath.Equals(TargetExePath, StringComparison.OrdinalIgnoreCase))
             {
+                LogDebugMessage($"Copying executable from {currentExePath} to {TargetExePath}.");
                 MessageBox.Show(
                     $"The program will now copy the executable to the install folder: {InstallFolderPath}.",
                     $"{AppName} Install Copy Required",
@@ -455,12 +516,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
 
             // 2c. Write the README file
+            LogDebugMessage($"Writing Readme to {ReadmePath}.");
             File.WriteAllText(ReadmePath, ReadmeFileText);
 
             // 2d. Edit the Registry
+            LogDebugMessage("Setting registry Shell value.");
             SetUserShellRegistryValue(requiredShellValue);
 
             // 2e. Show successful install message
+            LogDebugMessage("Installation successful.");
             DialogResult viewReadme = MessageBox.Show(
                 $"{AppName} installation successful! The new shell will take effect on your next login. \n\n" +
                 $"Readme file created at: {ReadmePath}\n\n" +
@@ -478,6 +542,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         catch (Exception ex)
         {
+            LogDebugMessage($"INSTALLATION FAILED: {ex.Message}");
             MessageBox.Show($"Installation FAILED: {ex.Message}", $"{AppName} Installation Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -487,20 +552,23 @@ Note: You must log off and log back in for changes to the shell to take effect."
     {
         try
         {
+            LogDebugMessage("Starting uninstallation process.");
             // Revert the shell setting (delete the per-user key)
-            RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true);
-            if (key != null)
+            // Use RegistryKey? to handle potential null return from OpenSubKey.
+            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true))
             {
-                // Deleting the "Shell" value in HKCU reverts to the HKLM shell (which is usually explorer.exe)
-                key.DeleteValue("Shell", false);
-                key.Close();
-
-                MessageBox.Show(
-                    $"{AppName} uninstallation successful! The shell has been reverted to the default ({DefaultShell}). Please log off and log back on for changes to take effect.",
-                    $"{AppName} Uninstallation Complete",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information
-                );
+                if (key != null)
+                {
+                    // Deleting the "Shell" value in HKCU reverts to the HKLM shell (which is usually explorer.exe)
+                    key.DeleteValue("Shell", false);
+                    
+                    MessageBox.Show(
+                        $"{AppName} uninstallation successful! The shell has been reverted to the default ({DefaultShell}). Please log off and log back on for changes to take effect.",
+                        $"{AppName} Uninstallation Complete",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information
+                    );
+                }
             }
             
             try
@@ -514,9 +582,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
             {
                 // Ignore file cleanup errors
             }
+            LogDebugMessage("Uninstallation complete.");
         }
         catch (Exception ex)
         {
+            LogDebugMessage($"UNINSTALLATION FAILED: {ex.Message}");
             MessageBox.Show($"Uninstallation FAILED: {ex.Message}", $"{AppName} Uninstallation Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -525,24 +595,28 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // --- REGISTRY HELPERS ---
     private static string GetUserShellRegistryValue()
     {
-        RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath);
-        if (key != null)
+        // Use RegistryKey? to handle potential null return from OpenSubKey.
+        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath))
         {
-            string shellValue = key.GetValue("Shell") as string;
-            key.Close();
-            return shellValue ?? string.Empty;
+            if (key != null)
+            {
+                // Use string? for the result of GetValue as it might be null.
+                string? shellValue = key.GetValue("Shell") as string; 
+                
+                // Returns an empty string if the value is null, ensuring a non-nullable string result.
+                return shellValue ?? string.Empty; 
+            }
+            return string.Empty;
         }
-        return string.Empty;
     }
 
     private static void SetUserShellRegistryValue(string value)
     {
-        // Open the key with write permissions
-        RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true);
+        // Use RegistryKey? for OpenSubKey/CreateSubKey results.
+        RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true);
         if (key == null)
         {
-            // If the key doesn't exist, create it (shouldn't happen on modern Windows)
-            key = Registry.CurrentUser.CreateSubKey(RegistryKeyPath, true);
+            key = Registry.CurrentUser.CreateSubKey(RegistryKeyPath, true); 
         }
         
         if (key != null)
@@ -552,6 +626,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         else
         {
+            // This is hit only if OpenSubKey and CreateSubKey both return null.
             throw new Exception("Could not open or create the Winlogon registry key.");
         }
     }
