@@ -7,6 +7,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 using System.Diagnostics;
 using System.Runtime.InteropServices; // Required for P/Invoke (DllImport)
+using System.ComponentModel; // Required for Win32Exception
 
 // NOTE: This program requires the System.Windows.Forms assembly reference for MessageBox.
 // To compile as a non-console application (so no console window appears):
@@ -15,18 +16,91 @@ using System.Runtime.InteropServices; // Required for P/Invoke (DllImport)
 public class RDPShell
 {
     // --- NATIVE IMPORTS (P/Invoke) ---
+    // User32 imports for Keyboard state and window manipulation
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
 
-    // Virtual Key Codes (VKey)
-    // 0x11 is VK_CONTROL, used for detecting if the Ctrl key is down globally.
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    // Wtsapi32 imports for session information
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSQuerySessionInformation(
+        IntPtr hServer, 
+        int SessionId, 
+        WTS_INFO_CLASS WTSInfoClass, 
+        out IntPtr ppBuffer, 
+        out int pBytesReturned);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern void WTSFreeMemory(IntPtr pMemory);
+
+    // Enums for WTSQuerySessionInformation
+    private enum WTS_INFO_CLASS
+    {
+        WTSInitialProgram,
+        WTSApplicationName,
+        WTSWorkingDirectory,
+        WTSOEMId,
+        WTSSessionId,
+        WTSUserName,
+        WTSWinStationName,
+        WTSConnectState, // We need this one
+        WTSClientBuildNumber
+    }
+
+    private enum WTS_CONNECTSTATE_CLASS
+    {
+        WTSActive,              // The session is active (logged in, unlocked).
+        WTSConnected,           // The session is connected.
+        WTSConnectQuery,        
+        WTSShadow,              
+        WTSDisconnected,        // The session is disconnected (often reported when locked locally).
+        WTSIdle,                
+        WTSListen,              
+        WTSReset,               
+        WTSDown,                
+        WTSInit                 
+    }
+    
+    // Virtual Key Codes (VKey) and Windows Messages
     private const int VK_CONTROL = 0x11; 
+    private const uint WM_CLOSE = 0x0010;
 
     private static bool IsControlKeyDown()
     {
         // The high-order bit (0x8000) is set if the key is currently down.
-        // GetAsyncKeyState returns a short (Int16), so we check the high bit.
         return (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    }
+
+    // Helper function to check if the current user session is locked.
+    private static bool IsSessionLocked()
+    {
+        IntPtr pBuffer = IntPtr.Zero;
+        int bytesReturned;
+        int sessionId = Process.GetCurrentProcess().SessionId;
+
+        // Query the session connection state for the current session ID
+        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSConnectState, out pBuffer, out bytesReturned) && bytesReturned > 0)
+        {
+            try
+            {
+                // WTS_CONNECTSTATE_CLASS is an int (4 bytes)
+                WTS_CONNECTSTATE_CLASS state = (WTS_CONNECTSTATE_CLASS)Marshal.ReadInt32(pBuffer);
+                
+                // When a local console session is locked (Win+L), it often reports as WTSDisconnected.
+                // It means the session is running but no user input/display is active.
+                return state == WTS_CONNECTSTATE_CLASS.WTSDisconnected;
+            }
+            finally
+            {
+                WTSFreeMemory(pBuffer);
+            }
+        }
+        return false;
     }
 
 
@@ -40,6 +114,8 @@ public class RDPShell
     private static readonly string TargetExePath = Path.Combine(InstallFolderPath, AppName + ".exe");
     private static readonly string ReadmePath = Path.Combine(InstallFolderPath, "readme.txt");
     private const string DefaultShell = "explorer.exe";
+    private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection";
+
     
     // Multi-line text for the Readme file
     private const string ReadmeFileText = 
@@ -51,10 +127,11 @@ User: {Environment.UserName}
 
 Primary Function (On Login):
 1. The program checks if the Control (Ctrl) key is being held down.
-2. If Ctrl is held: It launches the default Windows shell ({DefaultShell}).
+2. If Ctrl is held: It requires administrative credentials. If accepted, it launches 
+   the default Windows shell ({DefaultShell}). If canceled, it logs off.
 3. If Ctrl is NOT held: It searches for an RDP file named 'RDPShell - *.rdp' 
    in the install folder and launches the Remote Desktop Client (mstsc.exe) 
-   using that file.
+   using that file. If no RDP file is found, it logs off.
 
 To Uninstall:
 Simply run the '{AppName}.exe' file from any location (e.g., double-click it).
@@ -83,26 +160,42 @@ Note: You must log off and log back in for changes to the shell to take effect."
     private static void RunAsShell()
     {
         Process subShellProcess = null;
+        bool rdpMode = false; // Flag to track if we launched mstsc.exe
 
         try
         {
             // 1. Conditional Launch based on Ctrl key state
             if (IsControlKeyDown())
             {
-                // Ctrl is pressed: launch the default shell (Explorer)
-                MessageBox.Show("Ctrl key detected during login. Launching default shell: explorer.exe", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                subShellProcess = Process.Start(DefaultShell);
+                // Ctrl is pressed - force credential check before launching desktop
+                MessageBox.Show(
+                    "Attempting to launch the desktop environment. You must provide administrative credentials to proceed.", 
+                    AppName, 
+                    MessageBoxButtons.OK, 
+                    MessageBoxIcon.Information
+                );
+
+                if (AttemptAdminCredentialCheck())
+                {
+                    // Credentials provided successfully (UAC accepted)
+                    subShellProcess = Process.Start(DefaultShell);
+                }
+                else
+                {
+                    // Credentials check failed (UAC cancelled or failure)
+                    MessageBox.Show("Administrative credential check failed or was canceled. Exiting user session now.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Stop);
+                }
             }
             else
             {
-                // Ctrl is not pressed: try to launch RDP session
+                // Ctrl is not pressed (RDP Mode)
                 string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell - *.rdp", SearchOption.TopDirectoryOnly);
 
                 if (rdpFiles.Length == 1)
                 {
                     // Found exactly one RDP file
-                    // MessageBox.Show($"Ctrl key not detected. Launching RDP session using: {Path.GetFileName(rdpFiles[0])}", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                     subShellProcess = LaunchRDP(rdpFiles[0]);
+                    rdpMode = true;
                 }
                 else if (rdpFiles.Length > 1)
                 {
@@ -114,17 +207,17 @@ Note: You must log off and log back in for changes to the shell to take effect."
                         MessageBoxIcon.Warning
                     );
                     subShellProcess = LaunchRDP(rdpFiles[0]);
+                    rdpMode = true;
                 }
                 else
                 {
-                    // No RDP file found (launch Explorer as a safe fallback)
+                    // No RDP file found - Log off immediately (per user request)
                     MessageBox.Show(
-                        $"Ctrl key not detected, but no RDP file found in '{InstallFolderPath}' matching 'RDPShell - *.rdp'. Launching {DefaultShell} as fallback.",
+                        $"No RDP file found in '{InstallFolderPath}' matching 'RDPShell - *.rdp'. Exiting user session now.",
                         AppName,
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning
                     );
-                    subShellProcess = Process.Start(DefaultShell);
                 }
             }
         }
@@ -136,23 +229,89 @@ Note: You must log off and log back in for changes to the shell to take effect."
             return; 
         }
 
-        // 2. Monitor the Subshell Process
+        // 2. Monitor the Subshell Process (Only if a process was started)
         if (subShellProcess != null)
         {
-            try
+            // Use an active monitoring loop instead of blocking WaitForExit()
+            while (true)
             {
-                // Wait for the launched process (explorer.exe or mstsc.exe) to exit
-                subShellProcess.WaitForExit();
-            }
-            catch (Exception ex)
-            {
-                // Handle exceptions if monitoring fails
-                MessageBox.Show($"Error monitoring sub-shell process: {ex.Message}. Exiting.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // Check if the process has exited
+                try
+                {
+                    if (subShellProcess.HasExited) break;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Catch exception if the process exits between checking HasExited and the loop start
+                    break;
+                }
+
+                // If in RDP mode, actively check for and close the blocking disconnection dialog
+                if (rdpMode)
+                {
+                    // Check if the session is locked. If it is, close the dialog.
+                    if (IsSessionLocked())
+                    {
+                        IntPtr hWnd = FindWindow(null, RDPDisconnectionDialogTitle);
+                        
+                        if (hWnd != IntPtr.Zero)
+                        {
+                            // Found the blocking dialog. Close it.
+                            PostMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                            // Do not break here; continue the loop to ensure mstsc.exe terminates.
+                        }
+                    }
+                    // If the session is NOT locked, we leave the dialog open for the user to see and click OK.
+                }
+                
+                // Wait briefly to avoid high CPU usage
+                Thread.Sleep(200);
             }
         }
         
         // 3. Exit the shell process. This signals the OS that the user session is over.
         Application.Exit();
+    }
+    
+    // Helper function to force a UAC prompt and check if elevation was accepted.
+    private static bool AttemptAdminCredentialCheck()
+    {
+        // We use cmd.exe as a harmless utility to launch elevated.
+        ProcessStartInfo psi = new ProcessStartInfo("cmd.exe");
+        psi.UseShellExecute = true; 
+        psi.Verb = "runas"; // THIS triggers the UAC prompt
+
+        try
+        {
+            // Start the elevated process (UAC succeeds)
+            Process tempProcess = Process.Start(psi);
+            
+            // Immediately close the elevated process we just started, 
+            // as its only purpose was to check credentials.
+            if (tempProcess != null)
+            {
+                // Give it a tiny moment to start before killing it.
+                Thread.Sleep(100); 
+                if (!tempProcess.HasExited)
+                {
+                    tempProcess.Kill();
+                }
+                tempProcess.Dispose();
+            }
+            return true; // UAC accepted, process started
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            // 1223 (The operation was canceled by the user) is the standard
+            // error code when the user clicks 'No' or 'Cancel' on the UAC prompt.
+            return false; // UAC was canceled
+        }
+        catch (Exception ex)
+        {
+            // Catch other unexpected errors during the check
+            MessageBox.Show($"Unexpected error during credential check: {ex.Message}", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
     }
     
     // Helper to launch the RDP client securely
@@ -278,7 +437,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 );
             }
             
-            // Optional cleanup (attempting to delete the running EXE's directory will likely fail, so we skip directory delete)
             try
             {
                 if (File.Exists(ReadmePath))
