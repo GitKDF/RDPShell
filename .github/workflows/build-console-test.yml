@@ -28,7 +28,7 @@ jobs:
           dotnet new console --name RDPShell --output . --force --framework net8.0-windows 
           
           # Remove the default Program.cs file (since RDPShell.cs contains the Main method)
-          Remove-Item Program.cs
+          # Remove-Item Program.cs
 
       - name: Add Required Dependencies
         run: |
