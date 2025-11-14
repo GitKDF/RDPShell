@@ -131,8 +131,8 @@ public class RDPShell
     private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection"; 
 
     
-    // Multi-line text for the Readme file
-    private const string ReadmeFileText = 
+    // Multi-line text for the Readme file. Changed from 'const' to 'static readonly' to allow runtime initialization.
+    private static readonly string ReadmeFileText = 
 $@"--- {AppName} Readme ---
 This utility has been installed as your custom Windows Shell.
 
