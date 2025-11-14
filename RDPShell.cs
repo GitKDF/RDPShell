@@ -66,7 +66,7 @@ public class RDPShell
     private const string AdminCheckFlag = "-admincheck"; 
     
     // DEBUG CONTROL FLAG: Set to 'false' to disable all file logging across the application.
-    private const bool DEBUG_ENABLED = true;
+    private const bool DEBUG_ENABLED = false;
     
     // Per-user registry path for the shell override
     private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"; 
@@ -289,7 +289,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 SystemEvents.SessionSwitch -= OnSessionSwitch;
                 CleanupCts?.Cancel(); // Ensure the cleanup loop stops if it's running
                 CleanupCts?.Dispose();
-                RDPSubShellProcess.Dispose();
+                RDPSubShellProcess?.Dispose(); // FIX: Used null-conditional operator to fix CS8602 warning
                 RDPSubShellProcess = null;
                 LogDebugMessage("SessionSwitch event listener unregistered.");
             }
@@ -411,18 +411,32 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
             if (windowTitle.ToString() == RDPDisconnectionDialogTitle)
             {
-                LogDebugMessage($"[Enum] MATCHED blocking RDP window. Title: '{windowTitle}' - Closing.");
-                PostMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-                return false;
+                LogDebugMessage($"[Enum] MATCHED blocking RDP window. Title: '{windowTitle}' - Initiating process kill for cleanup.");
+
+                // AGGRESSIVE CLEANUP: Kill the subshell process to force immediate logoff
+                if (RDPSubShellProcess != null)
+                {
+                    try
+                    {
+                        RDPSubShellProcess.Kill();
+                        LogDebugMessage("RDP Subshell process killed successfully.");
+                    }
+                    catch (Exception ex)
+                    {
+                        // Process may already be exiting or access denied
+                        LogDebugMessage($"Failed to kill RDP Subshell process: {ex.Message}");
+                    }
+                }
+                
+                // We stop enumeration after finding and attempting to kill the process.
+                return false; 
             }
-        }
-        else
-        {
-            LogDebugMessage($"Window does not belong to RDP Process ({windowProcessId} =/= {ownerProcessId})");
         }
         
         return true;
     }
+
+    // Removed the old CloseBlockingWindows(Process subShellProcess) function.
 
 
     // --- CREDENTIAL CHECK LOGIC ---
@@ -438,7 +452,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         try
         {
             // Start the process, which will trigger the UAC prompt
-            Process tempProcess = Process.Start(psi);
+            Process? tempProcess = Process.Start(psi); // FIX: Changed to nullable Process? to fix CS8600 warning
             
             if (tempProcess != null)
             {
