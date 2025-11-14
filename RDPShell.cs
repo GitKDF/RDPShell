@@ -186,26 +186,48 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // Helper function to check if the current user session is locked.
     private static bool IsSessionLocked()
     {
+        LogDebugMessage("IsSessionLocked check initiated.");
+
         IntPtr pBuffer = IntPtr.Zero;
         int bytesReturned;
         int sessionId = Process.GetCurrentProcess().SessionId;
+        
+        LogDebugMessage($"Current Session ID: {sessionId}");
+
 
         // Query the session connection state for the current session ID
         if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSConnectState, out pBuffer, out bytesReturned) && bytesReturned > 0)
         {
+            LogDebugMessage($"WTSQuerySessionInformation succeeded. Bytes returned: {bytesReturned}. pBuffer address: {pBuffer.ToInt64()}");
+
             try
             {
                 // CS8605 fixed by assuming non-null after WTSQuerySessionInformation success
                 WTS_CONNECTSTATE_CLASS state = (WTS_CONNECTSTATE_CLASS)Marshal.ReadInt32(pBuffer);
                 
+                // Added logging for the exact state returned
+                LogDebugMessage($"Extracted WTS_CONNECTSTATE_CLASS: {state}");
+
                 // When a local console session is locked (Win+L), it often reports as WTSDisconnected.
-                return state == WTS_CONNECTSTATE_CLASS.WTSDisconnected;
+                bool isLocked = state == WTS_CONNECTSTATE_CLASS.WTSDisconnected;
+                
+                // Added logging for the final decision
+                LogDebugMessage($"IsSessionLocked returning: {isLocked} (based on state == WTSDisconnected)");
+                
+                return isLocked;
             }
             finally
             {
                 WTSFreeMemory(pBuffer);
             }
         }
+        else
+        {
+            int error = Marshal.GetLastWin32Error();
+            LogDebugMessage($"WTSQuerySessionInformation failed. Error code: {error}");
+        }
+        LogDebugMessage("IsSessionLocked returning: False (Query failed or returned 0 bytes).");
+
         return false;
     }
 
@@ -402,7 +424,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         else
         {
-            LogDebugMessage($"Window does not belong to  to RDP Process ({windowProcessId} =/= {ownerProcessId})");
+            // Only log if the window does not belong to the RDP process to keep logs cleaner during normal operation
+            // LogDebugMessage($"Window does not belong to  to RDP Process ({windowProcessId} =/= {ownerProcessId})");
         }
 
         // Continue enumeration
