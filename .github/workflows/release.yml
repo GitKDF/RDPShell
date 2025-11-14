@@ -24,7 +24,9 @@ jobs:
 
       - name: Create minimal project
         run: |
-          dotnet new console -n RDPShellApp
+          dotnet new winforms -n RDPShellApp
+          (Get-Content RDPShellApp\RDPShellApp.csproj) -replace 'net9.0-windows','net8.0-windows' |
+            Set-Content RDPShellApp\RDPShellApp.csproj
           Remove-Item RDPShellApp\Program.cs   # delete the stub
           Move-Item RDPShell.cs RDPShellApp\RDPShell.cs
 
@@ -32,8 +34,6 @@ jobs:
         run: |
           cd RDPShellApp
           dotnet publish -c Release -r win-x64 --self-contained false -o ../out `
-            /p:AssemblyVersion=${{ github.ref_name }} `
-            /p:FileVersion=${{ github.ref_name }} `
             /p:InformationalVersion=${{ github.ref_name }}
 
       - name: Upload release asset
