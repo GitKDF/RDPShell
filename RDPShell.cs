@@ -531,17 +531,20 @@ Note: You must log off and log back in for changes to the shell to take effect."
     private static void InstallShell(string requiredShellValue)
     {
         try
-            {
+        {
             LogDebugMessage("Starting installation process.");
             
-            string currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe"); 
+            // --- FIX FOR IL3000 WARNING / SINGLE-FILE DEPLOYMENT ---
+            // Use Environment.ProcessPath to reliably get the full path to the running executable.
+            // Fallback to the old method (BaseDirectory) if ProcessPath is null (shouldn't happen).
+            string currentExePath = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
             
             if (!Directory.Exists(InstallFolderPath))
             {
                 LogDebugMessage($"Creating install directory: {InstallFolderPath}");
                 Directory.CreateDirectory(InstallFolderPath);
             }
-
+    
             if (!currentExePath.Equals(TargetExePath, StringComparison.OrdinalIgnoreCase))
             {
                 LogDebugMessage($"Copying executable from {currentExePath} to {TargetExePath}.");
@@ -552,15 +555,16 @@ Note: You must log off and log back in for changes to the shell to take effect."
                     MessageBoxIcon.Information
                 );
                 
+                // File.Copy logic is safer now that currentExePath is guaranteed to be correct.
                 File.Copy(currentExePath, TargetExePath, true);
             }
-
+    
             LogDebugMessage($"Writing Readme to {ReadmePath}.");
             File.WriteAllText(ReadmePath, ReadmeFileText);
-
+    
             LogDebugMessage("Setting registry Shell value.");
             SetUserShellRegistryValue(requiredShellValue);
-
+    
             LogDebugMessage("Installation successful.");
             DialogResult viewReadme = MessageBox.Show(
                 $"{AppName} installation successful! The new shell will take effect on your next login. \n\n" +
@@ -570,7 +574,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Information
             );
-
+    
             if (viewReadme == DialogResult.Yes)
             {
                 try
