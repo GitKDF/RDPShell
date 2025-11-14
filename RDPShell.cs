@@ -58,6 +58,10 @@ public class RDPShell
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
+    // New P/Invoke for getting the window title
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
     // Delegate for the EnumWindows callback
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -105,7 +109,7 @@ public class RDPShell
     private const int VK_LWIN = 0x5B; // Left Windows Key
     private const int VK_RWIN = 0x5C; // Right Windows Key
     private const uint WM_CLOSE = 0x0010;
-    // Standard Windows Dialog Class Name
+    // Standard Windows Dialog Class Name (Kept for reference, but we use title check now)
     private const string StandardDialogClassName = "#32770"; 
 
     // Constants for the persistent key check
@@ -175,6 +179,7 @@ public class RDPShell
     private static readonly string TargetExePath = Path.Combine(InstallFolderPath, AppName + ".exe");
     private static readonly string ReadmePath = Path.Combine(InstallFolderPath, "readme.txt");
     private const string DefaultShell = "explorer.exe";
+    // Exact title of the RDP dialog that often blocks logoff when disconnected/locked.
     private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection"; 
 
     
@@ -273,23 +278,22 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 
                 string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell - *.rdp", SearchOption.TopDirectoryOnly);
 
-                if (rdpFiles.Length == 1)
+                if (rdpFiles.Length >= 1)
                 {
-                    LogDebugMessage($"Found single RDP file: {rdpFiles[0]}. Launching mstsc.exe.");
-                    // Found exactly one RDP file
-                    subShellProcess = LaunchRDP(rdpFiles[0]);
-                    rdpMode = true;
-                }
-                else if (rdpFiles.Length > 1)
-                {
-                    LogDebugMessage($"Found multiple RDP files. Using: {rdpFiles[0]}.");
-                    // Found multiple RDP files (use the first one and warn)
-                    MessageBox.Show(
-                        $"Multiple RDP files found. Using the first one: {Path.GetFileName(rdpFiles[0])}. Launching mstsc.exe...",
-                        AppName,
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Warning
-                    );
+                    LogDebugMessage($"Found RDP file(s). Using: {rdpFiles[0]}. Launching mstsc.exe.");
+                    
+                    if (rdpFiles.Length > 1)
+                    {
+                        // Found multiple RDP files (use the first one and log)
+                        LogDebugMessage($"Found multiple RDP files. Using: {rdpFiles[0]}.");
+                        //MessageBox.Show(
+                        //    $"Multiple RDP files found. Using the first one: {Path.GetFileName(rdpFiles[0])}. Launching mstsc.exe...",
+                        //    AppName,
+                        //    MessageBoxButtons.OK,
+                        //    MessageBoxIcon.Warning
+                        //);
+                    }
+                    
                     subShellProcess = LaunchRDP(rdpFiles[0]);
                     rdpMode = true;
                 }
@@ -358,7 +362,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // --- RDP WINDOW CLEANUP LOGIC ---
 
     // Static callback used by EnumWindows to check if a window belongs to our RDP process 
-    // AND if it is a standard Windows dialog box (#32770).
+    // AND if it has the known blocking title.
     private static bool EnumWindowCallback(IntPtr hWnd, IntPtr lParam)
     {
         // FIX for CS8600: Explicitly check for null and cast for safety during unboxing.
@@ -377,13 +381,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
         
         if (windowProcessId == ownerProcessId)
         {
-            // Window is owned by mstsc.exe. Now check if it's a dialog.
-            StringBuilder className = new StringBuilder(256);
-            GetClassName(hWnd, className, className.Capacity);
+            // Window is owned by mstsc.exe. Now check the title.
+            StringBuilder windowTitle = new StringBuilder(256);
+            GetWindowText(hWnd, windowTitle, windowTitle.Capacity);
 
-            if (className.ToString() == StandardDialogClassName)
+            // Check for an exact title match to the known blocking dialog title
+            if (windowTitle.ToString() == RDPDisconnectionDialogTitle)
             {
-                // Found a window owned by mstsc.exe with the standard dialog class name. Close it.
+                // Found a window owned by mstsc.exe with the exact title "Remote Desktop Connection". Close it.
+                LogDebugMessage($"Closing blocking RDP window with title: '{windowTitle}'");
                 PostMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
             
                 // Return false to stop enumeration after closing one, as this should unblock mstsc.exe.
@@ -395,7 +401,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         return true;
     }
     
-    // Looks for any standard dialog box (#32770) owned by the target process and closes it.
+    // Looks for any standard dialog box (now filtered by title) owned by the target process and closes it.
     private static void CloseBlockingWindows(Process subShellProcess)
     {
         if (subShellProcess == null) return;
@@ -571,10 +577,19 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 MessageBoxIcon.Information
             );
 
-            // 2f. Launch Readme if requested
+            // 2f. Launch Readme if requested - FIX: Use explicit ProcessStartInfo
             if (viewReadme == DialogResult.Yes)
             {
-                Process.Start(ReadmePath);
+                try
+                {
+                    // Explicitly use ShellExecute = true to rely on file associations for .txt files
+                    Process.Start(new ProcessStartInfo(ReadmePath) { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    LogDebugMessage($"Failed to launch Readme file: {ex.Message}");
+                    MessageBox.Show($"Warning: Failed to automatically open the Readme file. You can find it at: {ReadmePath}", $"{AppName} Launch Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
             }
         }
         catch (Exception ex)
