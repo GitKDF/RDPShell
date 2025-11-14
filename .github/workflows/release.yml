@@ -24,18 +24,16 @@ jobs:
 
       - name: Create minimal project
         run: |
-          dotnet new winforms -n RDPShell
-          (Get-Content RDPShell\RDPShell.csproj) -replace 'net9.0-windows','net8.0-windows' |
-            Set-Content RDPShell\RDPShell.csproj
-          Remove-Item RDPShell\Program.cs
-          Remove-Item RDPShell\Form1.cs
-          Remove-Item RDPShell\Form1.Designer.cs
-          Remove-Item RDPShell\Program.cs   # delete the stub
-          Move-Item RDPShell.cs RDPShell\RDPShell.cs
+          dotnet new winforms --force
+          (Get-Content RDPShell.csproj) -replace 'net9.0-windows','net8.0-windows' |
+            Set-Content RDPShell.csproj
+          Remove-Item Program.cs
+          Remove-Item Form1.cs
+          Remove-Item Form1.Designer.cs
+          Move-Item RDPShell.cs RDPShell.cs
 
       - name: Build framework-dependent exe
         run: |
-          cd RDPShell
           #dotnet publish -c Release -r win-x64 --self-contained false -o ../out `
           dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ../out `
             /p:InformationalVersion=${{ github.ref_name }}
