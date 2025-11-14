@@ -25,7 +25,8 @@ jobs:
       - name: Create minimal project
         run: |
           dotnet new console -n RDPShellApp
-          move RDPShell.cs RDPShellApp\Program.cs
+          Remove-Item RDPShellApp\Program.cs   # delete the stub
+          Move-Item RDPShell.cs RDPShellApp\RDPShell.cs
 
       - name: Build framework-dependent exe
         run: |
