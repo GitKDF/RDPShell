@@ -27,6 +27,9 @@ jobs:
           dotnet new winforms -n RDPShell
           (Get-Content RDPShell\RDPShell.csproj) -replace 'net9.0-windows','net8.0-windows' |
             Set-Content RDPShell\RDPShell.csproj
+          Remove-Item RDPShell\Program.cs
+          Remove-Item RDPShell\Form1.cs
+          Remove-Item RDPShell\Form1.Designer.cs
           Remove-Item RDPShell\Program.cs   # delete the stub
           Move-Item RDPShell.cs RDPShell\RDPShell.cs
 
