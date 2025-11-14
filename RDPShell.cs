@@ -6,8 +6,9 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using System.Diagnostics;
-using System.Runtime.InteropServices; // Required for P/Invoke (DllImport)
+using System.Runtime.InteropServices; // Required for P/Invoke (DllImport, Marshal, GCHandle)
 using System.ComponentModel; // Required for Win32Exception
+using System.Text; // Required for StringBuilder
 
 // NOTE: This program requires the System.Windows.Forms assembly reference for MessageBox.
 // To compile as a non-console application (so no console window appears):
@@ -16,15 +17,27 @@ using System.ComponentModel; // Required for Win32Exception
 public class RDPShell
 {
     // --- NATIVE IMPORTS (P/Invoke) ---
+    
     // User32 imports for Keyboard state and window manipulation
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
 
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    // User32 imports for window enumeration
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    // Delegate for the EnumWindows callback
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     // Wtsapi32 imports for session information
     [DllImport("wtsapi32.dll", SetLastError = true)]
@@ -69,6 +82,8 @@ public class RDPShell
     // Virtual Key Codes (VKey) and Windows Messages
     private const int VK_CONTROL = 0x11; 
     private const uint WM_CLOSE = 0x0010;
+    // Standard Windows Dialog Class Name
+    private const string StandardDialogClassName = "#32770"; 
 
     private static bool IsControlKeyDown()
     {
@@ -92,7 +107,6 @@ public class RDPShell
                 WTS_CONNECTSTATE_CLASS state = (WTS_CONNECTSTATE_CLASS)Marshal.ReadInt32(pBuffer);
                 
                 // When a local console session is locked (Win+L), it often reports as WTSDisconnected.
-                // It means the session is running but no user input/display is active.
                 return state == WTS_CONNECTSTATE_CLASS.WTSDisconnected;
             }
             finally
@@ -114,7 +128,7 @@ public class RDPShell
     private static readonly string TargetExePath = Path.Combine(InstallFolderPath, AppName + ".exe");
     private static readonly string ReadmePath = Path.Combine(InstallFolderPath, "readme.txt");
     private const string DefaultShell = "explorer.exe";
-    private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection";
+    private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection"; 
 
     
     // Multi-line text for the Readme file
@@ -246,22 +260,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
                     break;
                 }
 
-                // If in RDP mode, actively check for and close the blocking disconnection dialog
-                if (rdpMode)
+                // If in RDP mode and the session is locked, actively close any blocking dialog windows.
+                if (rdpMode && IsSessionLocked())
                 {
-                    // Check if the session is locked. If it is, close the dialog.
-                    if (IsSessionLocked())
-                    {
-                        IntPtr hWnd = FindWindow(null, RDPDisconnectionDialogTitle);
-                        
-                        if (hWnd != IntPtr.Zero)
-                        {
-                            // Found the blocking dialog. Close it.
-                            PostMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-                            // Do not break here; continue the loop to ensure mstsc.exe terminates.
-                        }
-                    }
-                    // If the session is NOT locked, we leave the dialog open for the user to see and click OK.
+                    CloseBlockingWindows(subShellProcess);
                 }
                 
                 // Wait briefly to avoid high CPU usage
@@ -273,6 +275,70 @@ Note: You must log off and log back in for changes to the shell to take effect."
         Application.Exit();
     }
     
+    // --- RDP WINDOW CLEANUP LOGIC ---
+
+    // Static callback used by EnumWindows to check if a window belongs to our RDP process 
+    // AND if it is a standard Windows dialog box (#32770).
+    private static bool EnumWindowCallback(IntPtr hWnd, IntPtr lParam)
+    {
+        uint ownerProcessId = (uint)GCHandle.FromIntPtr(lParam).Target;
+        uint windowProcessId;
+        
+        // Get the process ID of the window
+        GetWindowThreadProcessId(hWnd, out windowProcessId);
+        
+        if (windowProcessId == ownerProcessId)
+        {
+            // Window is owned by mstsc.exe. Now check if it's a dialog.
+            StringBuilder className = new StringBuilder(256);
+            GetClassName(hWnd, className, className.Capacity);
+
+            if (className.ToString() == StandardDialogClassName)
+            {
+                // Found a window owned by mstsc.exe with the standard dialog class name. Close it.
+                PostMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            
+                // Return false to stop enumeration after closing one, as this should unblock mstsc.exe.
+                return false;
+            }
+        }
+
+        // Continue enumeration
+        return true;
+    }
+    
+    // Looks for any standard dialog box (#32770) owned by the target process and closes it.
+    private static void CloseBlockingWindows(Process subShellProcess)
+    {
+        if (subShellProcess == null) return;
+        
+        try
+        {
+            // Use a GCHandle to safely pass the process ID to the static callback method
+            GCHandle gch = GCHandle.Alloc((uint)subShellProcess.Id);
+            
+            try
+            {
+                // Enumerate all top-level windows
+                EnumWindows(EnumWindowCallback, GCHandle.ToIntPtr(gch));
+            }
+            finally
+            {
+                if (gch.IsAllocated)
+                {
+                    gch.Free();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Log or handle P/Invoke errors during cleanup
+            Debug.WriteLine($"Error during window cleanup: {ex.Message}");
+        }
+    }
+
+    // --- CREDENTIAL CHECK LOGIC ---
+
     // Helper function to force a UAC prompt and check if elevation was accepted.
     private static bool AttemptAdminCredentialCheck()
     {
