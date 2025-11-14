@@ -200,12 +200,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 // ... (Win Key logic remains the same)
                 LogDebugMessage("Windows key detected. Attempting admin credential check.");
                 
-                MessageBox.Show(
-                    "Attempting to launch the desktop environment. You must provide administrative credentials to proceed.", 
-                    AppName, 
-                    MessageBoxButtons.OK, 
-                    MessageBoxIcon.Information
-                );
+                //MessageBox.Show(
+                //    "Attempting to launch the desktop environment. You must provide administrative credentials to proceed.", 
+                //    AppName, 
+                //    MessageBoxButtons.OK, 
+                //    MessageBoxIcon.Information
+                //);
 
                 if (AttemptAdminCredentialCheck())
                 {
@@ -215,7 +215,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 else
                 {
                     LogDebugMessage("Admin check failed or canceled. Logging off.");
-                    MessageBox.Show("Administrative credential check failed or was canceled. Exiting user session now.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Stop);
+                    MessageBox.Show("You must have administrative privileges to access the local desktop on this account.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Stop);
                 }
             }
             else
@@ -223,7 +223,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 // Win Key is not pressed (RDP Mode)
                 LogDebugMessage("Windows key not detected. Attempting RDP mode.");
                 
-                string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell - *.rdp", SearchOption.TopDirectoryOnly);
+                string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell*.rdp", SearchOption.TopDirectoryOnly);
 
                 if (rdpFiles.Length >= 1)
                 {
@@ -241,7 +241,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 {
                     LogDebugMessage("No RDP file found. Logging off.");
                     MessageBox.Show(
-                        $"No RDP file found in '{InstallFolderPath}' matching 'RDPShell - *.rdp'. Exiting user session now.",
+                        $"No RDP file found in '{InstallFolderPath}' matching 'RDPShell*.rdp'. Exiting user session now.",
                         AppName,
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning
