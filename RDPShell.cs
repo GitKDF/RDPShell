@@ -66,7 +66,7 @@ public class RDPShell
     private const string AdminCheckFlag = "-admincheck"; 
     
     // DEBUG CONTROL FLAG: Set to 'false' to disable all file logging across the application.
-    private const bool DEBUG_ENABLED = false;
+    private const bool DEBUG_ENABLED = true;
     
     // Per-user registry path for the shell override
     private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"; 
@@ -416,11 +416,13 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 return false;
             }
         }
+        else
+        {
+            LogDebugMessage($"Window does not belong to RDP Process ({windowProcessId} =/= {ownerProcessId})");
+        }
         
         return true;
     }
-
-    // Removed the old CloseBlockingWindows(Process subShellProcess) function.
 
 
     // --- CREDENTIAL CHECK LOGIC ---
