@@ -109,19 +109,21 @@ public class RDPShell
     private const string StandardDialogClassName = "#32770"; 
 
     // Constants for the persistent key check
-    private const int CHECK_DURATION_MS = 500; 
+    private const int CHECK_DURATION_MS = 5000; //Test 5 sec detection window
     private const int CHECK_INTERVAL_MS = 25;  
+    private const short KEY_DOWN_BIT = unchecked((short)0x8000); // The high-order bit check
 
     private static bool IsControlKeyDown()
     {
-        // FIX: Implement persistent check loop to catch the keypress during the critical shell startup window.
-        LogDebugMessage($"Starting persistent Ctrl key check for {CHECK_DURATION_MS}ms...");
+        // Use the high-order bit check for maximum P/Invoke accuracy
+        LogDebugMessage($"Starting persistent Ctrl key check for {CHECK_DURATION_MS}ms (using 0x8000 bit check)...");
         Stopwatch timer = Stopwatch.StartNew();
 
         while (timer.ElapsedMilliseconds < CHECK_DURATION_MS)
         {
-            // GetKeyState returns a negative value if the high-order bit is set (key is down).
-            if ((GetKeyState(VK_LCONTROL) < 0) || (GetKeyState(VK_RCONTROL) < 0))
+            // Check if the high-order bit of the GetKeyState result is set.
+            if ((GetKeyState(VK_LCONTROL) & KEY_DOWN_BIT) == KEY_DOWN_BIT || 
+                (GetKeyState(VK_RCONTROL) & KEY_DOWN_BIT) == KEY_DOWN_BIT)
             {
                 LogDebugMessage("Ctrl key detected during persistent check.");
                 return true;
@@ -410,9 +412,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             finally
             {
                 if (gch.IsAllocated)
-                {
                     gch.Free();
-                }
             }
         }
         catch (Exception ex)
@@ -609,6 +609,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
             
             try
             {
+                if (File.Exists(LogFilePath)) // Added log file cleanup
+                {
+                    File.Delete(LogFilePath);
+                }
                 if (File.Exists(ReadmePath))
                 {
                     File.Delete(ReadmePath);
