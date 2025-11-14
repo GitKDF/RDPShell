@@ -3,17 +3,13 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Threading;
-using System.Threading.Tasks; // New import for async task management
-using System.Windows.Forms;
+using System.Threading.Tasks; 
 using Microsoft.Win32; // Used for SessionSwitch events and Registry
 using System.Diagnostics; 
 using System.Runtime.InteropServices; 
 using System.ComponentModel; 
 using System.Text; 
-
-// NOTE: This program requires the System.Windows.Forms assembly reference for MessageBox.
-// To compile as a non-console application (so no console window appears):
-// csc /target:winexe /reference:System.Windows.Forms.dll RDPShell.cs
+using System.Linq;
 
 public class RDPShell
 {    
@@ -45,6 +41,10 @@ public class RDPShell
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
     
+    // P/Invoke for native Windows MessageBox API (replaces System.Windows.Forms.MessageBox)
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern int MessageBox(IntPtr hWnd, string lpText, string lpCaption, uint uType);
+
     // Delegate for the EnumWindows callback
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     
@@ -58,6 +58,19 @@ public class RDPShell
     private const short KEY_DOWN_BIT = unchecked((short)0x8000); 
     private const short KEY_PRESSED_BIT = 0x0001; 
     private const short KEY_CHECK_MASK = KEY_DOWN_BIT | KEY_PRESSED_BIT; 
+
+    // MessageBox constants
+    private const uint MB_OK = 0x00000000;
+    private const uint MB_YESNO = 0x00000004;
+    private const uint MB_ICONERROR = 0x00000010;
+    private const uint MB_ICONWARNING = 0x00000030;
+    private const uint MB_ICONINFORMATION = 0x00000040;
+    
+    // MessageBox return codes
+    private const int IDOK = 1;
+    private const int IDYES = 6;
+    private const int IDNO = 7;
+    private const int IDCANCEL = 2; // Not used but good to have
 
     // --- CONSTANTS AND CONFIGURATION ---
     private const string AppName = "RDPShell";
@@ -128,6 +141,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
     }
     
+    // --- NATIVE MESSAGE BOX HELPER ---
+    // Used only in shell mode or for fatal errors to provide a non-console notification.
+    private static int ShowMessageBox(string text, string caption, uint type)
+    {
+        // Use IntPtr.Zero for hWnd to make it a general message box owned by the desktop.
+        return MessageBox(IntPtr.Zero, text, caption, type);
+    }
+    
     // --- UTILITY FUNCTIONS ---
     
     private static string GetWindowClassName(IntPtr hWnd)
@@ -156,7 +177,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
     }
     
     // --- MAIN ENTRY POINT ---
-    [STAThread] // Required for System.Windows.Forms.MessageBox
     public static void Main(string[] args)
     {
         try 
@@ -181,7 +201,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
         catch (Exception ex)
         {
             LogDebugMessage($"FATAL UNHANDLED EXCEPTION: {ex}");
-            MessageBox.Show($"FATAL ERROR: An unhandled exception occurred.\n\nDetails written to {LogFilePath}", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            
+            // Use native message box for visibility, as this could happen in shell mode or before
+            // console output is established correctly.
+            ShowMessageBox(
+                $"FATAL ERROR: An unhandled exception occurred.\n\nDetails written to {LogFilePath}", 
+                AppName, 
+                MB_ICONERROR | MB_OK
+            );
+            Environment.Exit(1);
         }
     }
 
@@ -197,16 +225,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
         {
             if (IsWinKeyDown())
             {
-                // ... (Win Key logic remains the same)
                 LogDebugMessage("Windows key detected. Attempting admin credential check.");
                 
-                //MessageBox.Show(
-                //    "Attempting to launch the desktop environment. You must provide administrative credentials to proceed.", 
-                //    AppName, 
-                //    MessageBoxButtons.OK, 
-                //    MessageBoxIcon.Information
-                //);
-
                 if (AttemptAdminCredentialCheck())
                 {
                     LogDebugMessage($"Admin check passed. Launching {DefaultShell}.");
@@ -215,7 +235,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 else
                 {
                     LogDebugMessage("Admin check failed or canceled. Logging off.");
-                    MessageBox.Show("You must have administrative privileges to access the local desktop on this account.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Stop);
+                    ShowMessageBox(
+                        "You must have administrative privileges to access the local desktop on this account.", 
+                        AppName, 
+                        MB_ICONERROR | MB_OK
+                    );
                 }
             }
             else
@@ -240,11 +264,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 else
                 {
                     LogDebugMessage("No RDP file found. Logging off.");
-                    MessageBox.Show(
+                    ShowMessageBox(
                         $"No RDP file found in '{InstallFolderPath}' matching 'RDPShell*.rdp'. Exiting user session now.",
                         AppName,
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Warning
+                        MB_ICONWARNING | MB_OK
                     );
                 }
             }
@@ -252,7 +275,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
         catch (Exception ex)
         {
             LogDebugMessage($"CRITICAL ERROR during shell launch: {ex.Message}");
-            MessageBox.Show($"Critical Error during sub-shell launch: {ex.Message}. Logging off now.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ShowMessageBox(
+                $"Critical Error during sub-shell launch: {ex.Message}. Logging off now.", 
+                AppName, 
+                MB_ICONERROR | MB_OK
+            );
             Process.Start("shutdown.exe", "/l /f"); 
             return; 
         }
@@ -289,7 +316,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 SystemEvents.SessionSwitch -= OnSessionSwitch;
                 CleanupCts?.Cancel(); // Ensure the cleanup loop stops if it's running
                 CleanupCts?.Dispose();
-                RDPSubShellProcess?.Dispose(); // FIX: Used null-conditional operator to fix CS8602 warning
+                RDPSubShellProcess?.Dispose(); 
                 RDPSubShellProcess = null;
                 LogDebugMessage("SessionSwitch event listener unregistered.");
             }
@@ -299,7 +326,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         LogDebugMessage("Subshell exited. Initiating session logoff.");
         Process.Start("shutdown.exe", "/l /f");
         
-        Application.Exit();
+        Environment.Exit(0);  // Use Environment.Exit() now that Application.Exit() is unavailable
     }
     
     // --- ASYNCHRONOUS SESSION SWITCH HANDLER ---
@@ -326,8 +353,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             LogDebugMessage("SessionSwitch: Workstation unlocked. Canceling asynchronous cleanup loop.");
             
             // Signal the background task to stop
-            CleanupCts?.Cancel();
-            // Note: The task itself will exit gracefully upon cancellation.
+            CleanupCts?.Cancel();   // The task itself will exit gracefully upon cancellation.
         }
     }
 
@@ -361,8 +387,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
     }
     
     // --- RDP WINDOW CLEANUP LOGIC ---
-
-    // Renamed the function to take the process ID directly
     private static void CloseBlockingWindowsById(uint subShellProcessId)
     {
         try
@@ -406,7 +430,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
             StringBuilder windowTitle = new StringBuilder(256);
             GetWindowText(hWnd, windowTitle, windowTitle.Capacity);
 
-            // Added detailed logging to debug title matching
             LogDebugMessage($"[Enum] Found RDP Process Window (PID: {windowProcessId}). Title: '{windowTitle}'");
 
             if (windowTitle.ToString() == RDPDisconnectionDialogTitle)
@@ -436,15 +459,13 @@ Note: You must log off and log back in for changes to the shell to take effect."
         return true;
     }
 
-    // Removed the old CloseBlockingWindows(Process subShellProcess) function.
-
 
     // --- CREDENTIAL CHECK LOGIC ---
 
     // Helper function to force a UAC prompt and check if elevation was accepted.
     private static bool AttemptAdminCredentialCheck()
     {
-        // Use the application's own executable path and the new flag
+        // Use the application's own executable path and the admin check flag which will exit immediately
         ProcessStartInfo psi = new ProcessStartInfo(TargetExePath, AdminCheckFlag);
         psi.UseShellExecute = true; 
         psi.Verb = "runas"; // Requests elevation
@@ -452,7 +473,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         try
         {
             // Start the process, which will trigger the UAC prompt
-            Process? tempProcess = Process.Start(psi); // FIX: Changed to nullable Process? to fix CS8600 warning
+            Process? tempProcess = Process.Start(psi);
             
             if (tempProcess != null)
             {
@@ -471,7 +492,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Unexpected error during credential check: {ex.Message}", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            // Use native message box for visibility in shell context
+            ShowMessageBox(
+                $"Unexpected error during credential check: {ex.Message}", 
+                AppName, 
+                MB_ICONERROR | MB_OK
+            );
             return false;
         }
     }
@@ -485,11 +511,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
     }
 
 
-    // --- INSTALLER/UNINSTALLER LOGIC ---
-    // (Omitted for brevity, logic remains the same)
+    // --- INSTALLER/UNINSTALLER LOGIC (Converted to Console I/O) ---
     private static void CheckAndManageInstallation()
     {
-        LogDebugMessage("Entering CheckAndManageInstallation mode.");
+        LogDebugMessage("Entering CheckAndManageInstallation mode (Console I/O).");
         
         string currentShellValue = GetUserShellRegistryValue();
         string requiredShellValue = $"\"{TargetExePath}\" {ShellFlag}";
@@ -498,32 +523,44 @@ Note: You must log off and log back in for changes to the shell to take effect."
         {
             LogDebugMessage("Installation detected. Prompting for uninstall.");
             
-            DialogResult result = MessageBox.Show(
-                $"The {AppName} shell is currently installed for user {Environment.UserName}. Would you like to UNINSTALL {AppName} and revert to the default shell?",
-                $"{AppName} Uninstall Detected",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question
-            );
+            Console.WriteLine($"========================================================================");
+            Console.WriteLine($" {AppName} Shell Detected");
+            Console.WriteLine($"========================================================================");
+            Console.WriteLine($"The {AppName} shell is currently installed for user {Environment.UserName}.");
+            Console.Write($"Would you like to UNINSTALL {AppName} and revert to the default shell? (press y, or any other key to cancel): ");
+            
+            string? input = Console.ReadLine()?.Trim().ToLower();
 
-            if (result == DialogResult.Yes)
+            if (input == "y")
             {
                 UninstallShell();
+            }
+            else
+            {
+                Console.WriteLine("\nUninstallation canceled. Press any key to exit.");
+                Console.ReadKey(true);
             }
             return; 
         }
 
         LogDebugMessage("Installation not detected. Prompting for install.");
         
-        DialogResult installResult = MessageBox.Show(
-            $"The {AppName} shell is currently NOT installed for user {Environment.UserName}. Would you like to INSTALL {AppName} as your default shell?",
-            $"{AppName} Install Prompt",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question
-        );
+        Console.WriteLine($"========================================================================");
+        Console.WriteLine($" {AppName} Shell Not Installed");
+        Console.WriteLine($"========================================================================");
+        Console.WriteLine($"The {AppName} shell is currently NOT installed for user {Environment.UserName}.");
+        Console.Write($"Would you like to INSTALL {AppName} as your default shell? (press y, or any other key to cancel): ");
 
-        if (installResult == DialogResult.Yes)
+        string? installInput = Console.ReadLine()?.Trim().ToLower();
+
+        if (installInput == "y")
         {
             InstallShell(requiredShellValue);
+        }
+        else
+        {
+            Console.WriteLine("\nInstallation canceled. Press any key to exit.");
+            Console.ReadKey(true);
         }
     }
 
@@ -531,63 +568,75 @@ Note: You must log off and log back in for changes to the shell to take effect."
     private static void InstallShell(string requiredShellValue)
     {
         try
-            {
+        {
             LogDebugMessage("Starting installation process.");
             
-            string currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe"); 
+            string currentExePath = Assembly.GetEntryAssembly()?.Location ?? Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
             
+            Console.WriteLine("\n--- Installing ---");
+
             if (!Directory.Exists(InstallFolderPath))
             {
                 LogDebugMessage($"Creating install directory: {InstallFolderPath}");
+                Console.WriteLine($"1. Creating install directory: {InstallFolderPath}");
                 Directory.CreateDirectory(InstallFolderPath);
+            }
+            else
+            {
+                Console.WriteLine($"1. Verifying install directory: {InstallFolderPath}");
             }
 
             if (!currentExePath.Equals(TargetExePath, StringComparison.OrdinalIgnoreCase))
             {
                 LogDebugMessage($"Copying executable from {currentExePath} to {TargetExePath}.");
-                MessageBox.Show(
-                    $"The program will now copy the executable to the install folder: {InstallFolderPath}.",
-                    $"{AppName} Install Copy Required",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information
-                );
+                Console.WriteLine("2. Copying executable to the persistent install location...");
                 
-                File.Copy(currentExePath, TargetExePath, true);
+                try
+                {
+                    File.Copy(currentExePath, TargetExePath, true);
+                }
+                catch (Exception copyEx)
+                {
+                    LogDebugMessage($"Error during file copy: {copyEx.Message}");
+                    Console.WriteLine($"   ! WARNING: Failed to copy executable: {copyEx.Message}");
+                    Console.WriteLine("   ! The shell may not launch correctly if the current path is removed.");
+                }
+            }
+            else
+            {
+                Console.WriteLine("2. Verifying current executable path.");
             }
 
             LogDebugMessage($"Writing Readme to {ReadmePath}.");
+            Console.WriteLine($"3. Writing Readme file to: {ReadmePath}");
             File.WriteAllText(ReadmePath, ReadmeFileText);
 
             LogDebugMessage("Setting registry Shell value.");
+            Console.WriteLine("4. Setting Windows registry key...");
             SetUserShellRegistryValue(requiredShellValue);
 
-            LogDebugMessage("Installation successful.");
-            DialogResult viewReadme = MessageBox.Show(
-                $"{AppName} installation successful! The new shell will take effect on your next login. \n\n" +
-                $"Readme file created at: {ReadmePath}\n\n" +
-                "Would you like to view the Readme file now?",
-                $"{AppName} Installation Complete",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Information
-            );
+            Console.WriteLine("\n--- Installation Successful ---");
+            Console.WriteLine($"{AppName} is successfully installed as your shell.");
+            Console.WriteLine("The new shell will take effect on your next login.");
+            Console.WriteLine($"Readme file created at: {ReadmePath}");
 
-            if (viewReadme == DialogResult.Yes)
-            {
-                try
-                {
-                    Process.Start(new ProcessStartInfo(ReadmePath) { UseShellExecute = true });
-                }
-                catch (Exception ex)
-                {
-                    LogDebugMessage($"Failed to launch Readme file: {ex.Message}");
-                    MessageBox.Show($"Warning: Failed to automatically open the Readme file. You can find it at: {ReadmePath}", $"{AppName} Launch Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-            }
+            // Show Readme inline
+            Console.WriteLine("\n--- Readme Content ---");
+            Console.WriteLine(ReadmeFileText);
+            Console.WriteLine("----------------------\n");
+
+            LogDebugMessage("Installation successful. Console displayed Readme.");
+            
+            Console.WriteLine("Press any key to exit.");
+            Console.ReadKey(true);
         }
         catch (Exception ex)
         {
             LogDebugMessage($"INSTALLATION FAILED: {ex.Message}");
-            MessageBox.Show($"Installation FAILED: {ex.Message}", $"{AppName} Installation Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Console.WriteLine("\n--- Installation FAILED ---");
+            Console.WriteLine($"ERROR: {ex.Message}");
+            Console.WriteLine("\nPress any key to exit.");
+            Console.ReadKey(true);
         }
     }
 
@@ -596,18 +645,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
         try
         {
             LogDebugMessage("Starting uninstallation process.");
+            Console.WriteLine("\n--- Uninstalling ---");
+
             using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true))
             {
                 if (key != null)
                 {
                     key.DeleteValue("Shell", false);
-                    
-                    MessageBox.Show(
-                        $"{AppName} uninstallation successful! The shell has been reverted to the default ({DefaultShell}). Please log off and log back on for changes to take effect.",
-                        $"{AppName} Uninstallation Complete",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information
-                    );
+                    Console.WriteLine("1. Registry shell value successfully deleted/reset.");
                 }
             }
             
@@ -616,21 +661,35 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 if (File.Exists(LogFilePath))
                 {
                     File.Delete(LogFilePath);
+                    Console.WriteLine("2. Log file deleted.");
                 }
                 if (File.Exists(ReadmePath))
                 {
                     File.Delete(ReadmePath);
+                    Console.WriteLine("3. Readme file deleted.");
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                LogDebugMessage($"Failed to delete files during uninstall: {ex.Message}");
+                Console.WriteLine($"   ! WARNING: Failed to delete log/readme files: {ex.Message}");
             }
+            
             LogDebugMessage("Uninstallation complete.");
+            
+            Console.WriteLine("\n--- Uninstallation Complete ---");
+            Console.WriteLine($"{AppName} has been uninstalled. The shell has been reverted to the default ({DefaultShell}).");
+            Console.WriteLine("Please log off and log back on for changes to take effect.");
+            Console.WriteLine("\nPress any key to exit.");
+            Console.ReadKey(true);
         }
         catch (Exception ex)
         {
             LogDebugMessage($"UNINSTALLATION FAILED: {ex.Message}");
-            MessageBox.Show($"Uninstallation FAILED: {ex.Message}", $"{AppName} Uninstallation Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Console.WriteLine("\n--- Uninstallation FAILED ---");
+            Console.WriteLine($"ERROR: {ex.Message}");
+            Console.WriteLine("\nPress any key to exit.");
+            Console.ReadKey(true);
         }
     }
 
