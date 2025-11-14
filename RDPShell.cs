@@ -98,15 +98,17 @@ public class RDPShell
     }
     
     // Virtual Key Codes (VKey) and Windows Messages
-    private const int VK_CONTROL = 0x11; 
+    private const int VK_LCONTROL = 0xA2; // Explicit Left Control
+    private const int VK_RCONTROL = 0xA3; // Explicit Right Control
     private const uint WM_CLOSE = 0x0010;
     // Standard Windows Dialog Class Name
     private const string StandardDialogClassName = "#32770"; 
 
     private static bool IsControlKeyDown()
     {
-        // The high-order bit (0x8000) is set if the key is currently down.
-        return (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        // FIX: Check both explicit Left and Right Control keys (VK_LCONTROL, VK_RCONTROL) 
+        // This is more reliable than VK_CONTROL in Winlogon startup scenarios.
+        return (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 || (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
     }
 
     // Helper function to check if the current user session is locked.
@@ -319,8 +321,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         
         // 3. Exit the shell process. This signals the OS that the user session is over.
-        LogDebugMessage("Exiting application.");
-        Application.Exit();
+        // FIX: Explicitly log off the user session, as only explorer.exe does this automatically.
+        LogDebugMessage("Subshell exited. Initiating session logoff.");
+        Process.Start("shutdown.exe", "/l /f");
+        
+        Application.Exit(); // Exit the shell process
     }
     
     // --- RDP WINDOW CLEANUP LOGIC ---
@@ -329,8 +334,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // AND if it is a standard Windows dialog box (#32770).
     private static bool EnumWindowCallback(IntPtr hWnd, IntPtr lParam)
     {
-        // Use the null-forgiving operator '!' as we know the target is a non-null uint (process ID).
-        uint ownerProcessId = (uint)GCHandle.FromIntPtr(lParam).Target!; 
+        // FIX for CS8600: Explicitly check for null and cast for safety during unboxing.
+        object? target = GCHandle.FromIntPtr(lParam).Target;
+        
+        // Ensure the target is a boxed uint (the process ID)
+        if (target is not uint ownerProcessId)
+        {
+            return true; // Continue enumeration if the handle is invalid
+        }
+
         uint windowProcessId;
         
         // Get the process ID of the window
@@ -488,11 +500,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
     private static void InstallShell(string requiredShellValue)
     {
         try
-        {
+            {
             LogDebugMessage("Starting installation process.");
             
-            // Use '!' to assert Assembly.GetExecutingAssembly().Location is non-null.
-            string currentExePath = Assembly.GetExecutingAssembly().Location!; 
+            // FIX for IL3000: Use AppContext.BaseDirectory instead of Assembly.Location for single-file executable path.
+            string currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe"); 
             
             // 2a. Ensure the installation folder exists
             if (!Directory.Exists(InstallFolderPath))
