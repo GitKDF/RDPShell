@@ -28,7 +28,7 @@ jobs:
           dotnet new console --name RDPShell --output . --force --framework net8.0
           
           # 3. Remove the default Program.cs file (since RDPShell.cs contains the Main method)
-          # Remove-Item Program.cs
+          Remove-Item Program.cs
 
           # 4. CRITICAL FIX: Replace the TargetFramework in RDPShell.csproj
           # This explicitly sets the TFM to net8.0-windows to suppress CA1416 warnings.
