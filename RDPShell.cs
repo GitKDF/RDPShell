@@ -38,7 +38,7 @@ public class RDPShell
     
     // User32 imports for Keyboard state and window manipulation
     [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int vKey); // Now using GetAsyncKeyState
+    private static extern short GetAsyncKeyState(int vKey); 
     
     // Synchronous key state check (used for startup detection)
     [DllImport("user32.dll")]
@@ -102,37 +102,39 @@ public class RDPShell
     }
     
     // Virtual Key Codes (VKey) and Windows Messages
-    private const int VK_RETURN = 0x0D; // Enter Key
+    private const int VK_LWIN = 0x5B; // Left Windows Key
+    private const int VK_RWIN = 0x5C; // Right Windows Key
     private const uint WM_CLOSE = 0x0010;
     // Standard Windows Dialog Class Name
     private const string StandardDialogClassName = "#32770"; 
 
     // Constants for the persistent key check
-    private const int CHECK_DURATION_MS = 500; // 500ms persistent check
-    private const int CHECK_INTERVAL_MS = 25;  
-    private const short KEY_DOWN_BIT = unchecked((short)0x8000); // The high-order bit check
+    private const int INITIAL_DELAY_MS = 500; // Single delay before polling
+    // 0x8000: Key is currently held down (State bit)
+    private const short KEY_DOWN_BIT = unchecked((short)0x8000); 
+    // 0x0001: Key was pressed since the last call to GetAsyncKeyState (Transition bit)
+    private const short KEY_PRESSED_BIT = 0x0001; 
+    // Combined bits we are checking for
+    private const short KEY_CHECK_MASK = KEY_DOWN_BIT | KEY_PRESSED_BIT; 
 
-    private static bool IsEnterKeyDown()
+    private static bool IsWinKeyDown()
     {
-        // Use the high-order bit check for maximum P/Invoke accuracy
-        LogDebugMessage($"Starting persistent Enter key check for {CHECK_DURATION_MS}ms (using GetAsyncKeyState and 0x8000 bit check)...");
-        Stopwatch timer = Stopwatch.StartNew();
+        LogDebugMessage($"Delaying {INITIAL_DELAY_MS}ms for input system initialization...");
+        // 1. Initial Delay
+        Thread.Sleep(INITIAL_DELAY_MS);
+        
+        LogDebugMessage("Performing single poll check for Windows Key (State bit | Pressed bit)...");
 
-        while (timer.ElapsedMilliseconds < CHECK_DURATION_MS)
+        // 2. Single Poll Check
+        // Check if EITHER key has the State bit (currently down) OR the Pressed bit (was pressed since last call) set.
+        if ((GetAsyncKeyState(VK_LWIN) & KEY_CHECK_MASK) != 0 ||
+            (GetAsyncKeyState(VK_RWIN) & KEY_CHECK_MASK) != 0)
         {
-            // Check if the high-order bit of the GetAsyncKeyState result is set.
-            // This tells us the key is CURRENTLY DOWN.
-            if ((GetAsyncKeyState(VK_RETURN) & KEY_DOWN_BIT) == KEY_DOWN_BIT)
-            {
-                LogDebugMessage("Enter key detected during persistent check.");
-                return true;
-            }
-
-            // Wait briefly to avoid high CPU usage
-            Thread.Sleep(CHECK_INTERVAL_MS);
+            LogDebugMessage("Windows key (LWIN or RWIN) detected during single poll.");
+            return true;
         }
         
-        LogDebugMessage("Enter key NOT detected after persistent check.");
+        LogDebugMessage("Windows key NOT detected after single poll.");
         return false;
     }
 
@@ -185,10 +187,10 @@ Install Path: {InstallFolderPath}
 User: {Environment.UserName}
 
 Primary Function (On Login):
-1. The program checks if the **Enter** key is being held down.
-2. If Enter is held: It requires administrative credentials. If accepted, it launches 
+1. The program checks if the **Windows Key** is being held down or was pressed during the login sequence.
+2. If the Windows Key is held/pressed: It requires administrative credentials. If accepted, it launches 
    the default Windows shell ({DefaultShell}). If canceled, it logs off.
-3. If Enter is NOT held: It searches for an RDP file named 'RDPShell - *.rdp' 
+3. If the Windows Key is NOT held/pressed: It searches for an RDP file named 'RDPShell - *.rdp' 
    in the install folder and launches the Remote Desktop Client (mstsc.exe) 
    using that file. If no RDP file is found, it logs off.
 
@@ -238,12 +240,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
         try
         {
-            // 1. Conditional Launch based on Enter key state
-            if (IsEnterKeyDown())
+            // 1. Conditional Launch based on Win key state
+            if (IsWinKeyDown())
             {
-                LogDebugMessage("Enter key detected. Attempting admin credential check.");
+                LogDebugMessage("Windows key detected. Attempting admin credential check.");
                 
-                // Enter is pressed - force credential check before launching desktop
+                // Win Key is pressed - force credential check before launching desktop
                 MessageBox.Show(
                     "Attempting to launch the desktop environment. You must provide administrative credentials to proceed.", 
                     AppName, 
@@ -266,8 +268,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
             else
             {
-                // Enter is not pressed (RDP Mode)
-                LogDebugMessage("Enter key not detected. Attempting RDP mode.");
+                // Win Key is not pressed (RDP Mode)
+                LogDebugMessage("Windows key not detected. Attempting RDP mode.");
                 
                 string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell - *.rdp", SearchOption.TopDirectoryOnly);
 
