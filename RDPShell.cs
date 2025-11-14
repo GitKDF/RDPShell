@@ -62,6 +62,12 @@ public class RDPShell
     // --- CONSTANTS AND CONFIGURATION ---
     private const string AppName = "RDPShell";
     private const string ShellFlag = "-shell";
+    // FLAG: Used only to trigger the UAC prompt
+    private const string AdminCheckFlag = "-admincheck"; 
+    
+    // DEBUG CONTROL FLAG: Set to 'false' to disable all file logging across the application.
+    private const bool DEBUG_ENABLED = false;
+    
     // Per-user registry path for the shell override
     private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"; 
     private static readonly string UserProfilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -89,7 +95,7 @@ Primary Function (On Login):
 1. The program checks if the **Windows Key** is being held down or was pressed during the login sequence.
 2. If the Windows Key is held/pressed: It requires administrative credentials. If accepted, it launches 
    the default Windows shell ({DefaultShell}). If canceled, it logs off.
-3. If the Windows Key is NOT held/pressed: It searches for an RDP file named 'RDPShell - *.rdp' 
+3. If the Windows Key is NOT held/pressed: It searches for an RDP file named 'RDPShell*.rdp' 
    in the install folder and launches the Remote Desktop Client (mstsc.exe) 
    using that file. If no RDP file is found, it logs off.
 
@@ -107,6 +113,9 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // --- LOGGING HELPER ---
     private static void LogDebugMessage(string message)
     {
+        // Check the control flag before writing the message
+        if (!DEBUG_ENABLED) return; 
+
         try
         {
             // Appends the current time and the message to the log file.
@@ -157,6 +166,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
             if (args.Length > 0 && args[0].Equals(ShellFlag, StringComparison.OrdinalIgnoreCase))
             {
                 RunAsShell();
+            }
+            else if (args.Length > 0 && args[0].Equals(AdminCheckFlag, StringComparison.OrdinalIgnoreCase))
+            {
+                // New Mode: Immediately exit after being launched with runas verb (for UAC check)
+                LogDebugMessage("AdminCheck mode triggered. Exiting successfully.");
+                return;
             }
             else
             {
@@ -255,18 +270,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 LogDebugMessage("SessionSwitch event listener registered.");
             }
 
-            // Simplified monitoring loop: just wait for the process to exit
-            while (true)
+            // Simplified monitoring loop: block until the subshell process exits.
+            try
             {
-                try
-                {
-                    if (subShellProcess.HasExited) break;
-                }
-                catch (InvalidOperationException)
-                {
-                    break;
-                }
-                Thread.Sleep(200);
+                subShellProcess.WaitForExit();
+            }
+            catch (InvalidOperationException)
+            {
+                // Process may have already exited and been disposed by an external event.
+                LogDebugMessage("Subshell process was already disposed or exited.");
             }
             
             LogDebugMessage("Subshell process exited.");
@@ -416,27 +428,29 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // Helper function to force a UAC prompt and check if elevation was accepted.
     private static bool AttemptAdminCredentialCheck()
     {
-        ProcessStartInfo psi = new ProcessStartInfo("cmd.exe");
+        // Use the application's own executable path and the new flag
+        ProcessStartInfo psi = new ProcessStartInfo(TargetExePath, AdminCheckFlag);
         psi.UseShellExecute = true; 
-        psi.Verb = "runas"; 
+        psi.Verb = "runas"; // Requests elevation
 
         try
         {
+            // Start the process, which will trigger the UAC prompt
             Process tempProcess = Process.Start(psi);
             
             if (tempProcess != null)
             {
-                Thread.Sleep(100); 
-                if (!tempProcess.HasExited)
-                {
-                    tempProcess.Kill();
-                }
+                // Wait for the tiny sub-process to exit. If UAC is accepted, it exits immediately.
+                // If UAC is canceled, a Win32Exception (1223) is thrown, which we catch below.
+                tempProcess.WaitForExit(); 
                 tempProcess.Dispose();
             }
+            // If we reach here, the process launched and exited successfully (UAC accepted).
             return true;
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
+            // Error code 1223 means "The operation was canceled by the user." (UAC declined).
             return false;
         }
         catch (Exception ex)
