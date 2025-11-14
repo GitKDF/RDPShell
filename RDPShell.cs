@@ -3,12 +3,13 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks; // New import for async task management
 using System.Windows.Forms;
-using Microsoft.Win32;
-using System.Diagnostics; // Required for Stopwatch
-using System.Runtime.InteropServices; // Required for P/Invoke (DllImport, Marshal, GCHandle)
-using System.ComponentModel; // Required for Win32Exception
-using System.Text; // Required for StringBuilder
+using Microsoft.Win32; // Used for SessionSwitch events and Registry
+using System.Diagnostics; 
+using System.Runtime.InteropServices; 
+using System.ComponentModel; 
+using System.Text; 
 
 // NOTE: This program requires the System.Windows.Forms assembly reference for MessageBox.
 // To compile as a non-console application (so no console window appears):
@@ -43,55 +44,14 @@ public class RDPShell
     // P/Invoke for getting the window title
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-
+    
     // Delegate for the EnumWindows callback
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    // Wtsapi32 imports for session information
-    [DllImport("wtsapi32.dll", SetLastError = true)]
-    private static extern bool WTSQuerySessionInformation(
-        IntPtr hServer, 
-        int SessionId, 
-        WTS_INFO_CLASS WTSInfoClass, 
-        out IntPtr ppBuffer, 
-        out int pBytesReturned);
-
-    [DllImport("wtsapi32.dll", SetLastError = true)]
-    private static extern void WTSFreeMemory(IntPtr pMemory);
-
-    // Enums for WTSQuerySessionInformation
-    private enum WTS_INFO_CLASS
-    {
-        WTSInitialProgram,
-        WTSApplicationName,
-        WTSWorkingDirectory,
-        WTSOEMId,
-        WTSSessionId,
-        WTSUserName,
-        WTSWinStationName,
-        WTSConnectState, // We need this one
-        WTSClientBuildNumber
-    }
-
-    private enum WTS_CONNECTSTATE_CLASS
-    {
-        WTSActive,              // The session is active (logged in, unlocked).
-        WTSConnected,           // The session is connected.
-        WTSConnectQuery,        
-        WTSShadow,              
-        WTSDisconnected,        // The session is disconnected (often reported when locked locally).
-        WTSIdle,                
-        WTSListen,              
-        WTSReset,               
-        WTSDown,                
-        WTSInit                 
-    }
     
     // Virtual Key Codes (VKey) and Windows Messages
     private const int VK_LWIN = 0x5B; // Left Windows Key
     private const int VK_RWIN = 0x5C; // Right Windows Key
     private const uint WM_CLOSE = 0x0010;
-    private const string StandardDialogClassName = "#32770"; 
 
     // Constants for the persistent key check
     private const int INITIAL_DELAY_MS = 500; // Single delay before polling
@@ -107,7 +67,7 @@ public class RDPShell
     private static readonly string UserProfilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private static readonly string InstallFolderPath = Path.Combine(UserProfilePath, AppName);
     
-    // Log file path in the installation directory (Moved here to ensure InstallFolderPath is defined first).
+    // Log file path in the installation directory 
     private static readonly string LogFilePath = Path.Combine(InstallFolderPath, "RDPShell.log");
 
     private static readonly string TargetExePath = Path.Combine(InstallFolderPath, AppName + ".exe");
@@ -138,7 +98,13 @@ Simply run the '{AppName}.exe' file from any location (e.g., double-click it).
 The program will detect the installation and prompt you for uninstallation.
 Note: You must log off and log back in for changes to the shell to take effect.";
 
-    // --- LOGGING HELPER (Moved here) ---
+    // --- STATE MANAGEMENT ---
+    // Store the process launched in RDP mode so the event handler can access it
+    private static Process? RDPSubShellProcess; 
+    // Used to manage the asynchronous cleanup loop
+    private static CancellationTokenSource? CleanupCts; 
+
+    // --- LOGGING HELPER ---
     private static void LogDebugMessage(string message)
     {
         try
@@ -165,13 +131,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
     private static bool IsWinKeyDown()
     {
         LogDebugMessage($"Delaying {INITIAL_DELAY_MS}ms for input system initialization...");
-        // 1. Initial Delay
         Thread.Sleep(INITIAL_DELAY_MS);
         
         LogDebugMessage("Performing single poll check for Windows Key (State bit | Pressed bit)...");
 
-        // 2. Single Poll Check
-        // Check if EITHER key has the State bit (currently down) OR the Pressed bit (was pressed since last call) set.
         if ((GetAsyncKeyState(VK_LWIN) & KEY_CHECK_MASK) != 0 ||
             (GetAsyncKeyState(VK_RWIN) & KEY_CHECK_MASK) != 0)
         {
@@ -182,82 +145,27 @@ Note: You must log off and log back in for changes to the shell to take effect."
         LogDebugMessage("Windows key NOT detected after single poll.");
         return false;
     }
-
-    // Helper function to check if the current user session is locked.
-    private static bool IsSessionLocked()
-    {
-        LogDebugMessage("IsSessionLocked check initiated.");
-
-        IntPtr pBuffer = IntPtr.Zero;
-        int bytesReturned;
-        int sessionId = Process.GetCurrentProcess().SessionId;
-        
-        LogDebugMessage($"Current Session ID: {sessionId}");
-
-
-        // Query the session connection state for the current session ID
-        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSConnectState, out pBuffer, out bytesReturned) && bytesReturned > 0)
-        {
-            LogDebugMessage($"WTSQuerySessionInformation succeeded. Bytes returned: {bytesReturned}. pBuffer address: {pBuffer.ToInt64()}");
-
-            try
-            {
-                // CS8605 fixed by assuming non-null after WTSQuerySessionInformation success
-                WTS_CONNECTSTATE_CLASS state = (WTS_CONNECTSTATE_CLASS)Marshal.ReadInt32(pBuffer);
-                
-                // Added logging for the exact state returned
-                LogDebugMessage($"Extracted WTS_CONNECTSTATE_CLASS: {state}");
-
-                // When a local console session is locked (Win+L), it often reports as WTSDisconnected.
-                bool isLocked = state == WTS_CONNECTSTATE_CLASS.WTSDisconnected;
-                
-                // Added logging for the final decision
-                LogDebugMessage($"IsSessionLocked returning: {isLocked} (based on state == WTSDisconnected)");
-                
-                return isLocked;
-            }
-            finally
-            {
-                WTSFreeMemory(pBuffer);
-            }
-        }
-        else
-        {
-            int error = Marshal.GetLastWin32Error();
-            LogDebugMessage($"WTSQuerySessionInformation failed. Error code: {error}");
-        }
-        LogDebugMessage("IsSessionLocked returning: False (Query failed or returned 0 bytes).");
-
-        return false;
-    }
-
     
     // --- MAIN ENTRY POINT ---
     [STAThread] // Required for System.Windows.Forms.MessageBox
     public static void Main(string[] args)
     {
-        // Add a global try/catch to ensure we can log or display an error if the app fails early.
         try 
         {
             LogDebugMessage($"Application started. Arguments: {string.Join(" ", args)}");
             
-            // Check if the application is running in 'Shell Mode' via the flag
             if (args.Length > 0 && args[0].Equals(ShellFlag, StringComparison.OrdinalIgnoreCase))
             {
-                // PART 1: SHELL MODE (Launched by Winlogon)
                 RunAsShell();
             }
             else
             {
-                // PART 2: INSTALLER/UNINSTALLER MODE (Interactive)
                 CheckAndManageInstallation();
             }
         }
         catch (Exception ex)
         {
-            // Fallback for unhandled exceptions outside of core logic
             LogDebugMessage($"FATAL UNHANDLED EXCEPTION: {ex}");
-            // Display message box as a last resort
             MessageBox.Show($"FATAL ERROR: An unhandled exception occurred.\n\nDetails written to {LogFilePath}", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -267,17 +175,16 @@ Note: You must log off and log back in for changes to the shell to take effect."
     {
         LogDebugMessage("Entering RunAsShell mode.");
         
-        Process? subShellProcess = null; // Changed to nullable
-        bool rdpMode = false; // Flag to track if we launched mstsc.exe
+        Process? subShellProcess = null;
+        bool rdpMode = false;
 
         try
         {
-            // 1. Conditional Launch based on Win key state
             if (IsWinKeyDown())
             {
+                // ... (Win Key logic remains the same)
                 LogDebugMessage("Windows key detected. Attempting admin credential check.");
                 
-                // Win Key is pressed - force credential check before launching desktop
                 MessageBox.Show(
                     "Attempting to launch the desktop environment. You must provide administrative credentials to proceed.", 
                     AppName, 
@@ -288,13 +195,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 if (AttemptAdminCredentialCheck())
                 {
                     LogDebugMessage($"Admin check passed. Launching {DefaultShell}.");
-                    // Credentials provided successfully (UAC accepted)
                     subShellProcess = Process.Start(DefaultShell);
                 }
                 else
                 {
                     LogDebugMessage("Admin check failed or canceled. Logging off.");
-                    // Credentials check failed (UAC cancelled or failure)
                     MessageBox.Show("Administrative credential check failed or was canceled. Exiting user session now.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Stop);
                 }
             }
@@ -311,7 +216,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
                     
                     if (rdpFiles.Length > 1)
                     {
-                        // Found multiple RDP files (use the first one and log)
                         LogDebugMessage($"Found multiple RDP files. Using the first one: {Path.GetFileName(rdpFiles[0])}.");
                     }
                     
@@ -321,7 +225,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 else
                 {
                     LogDebugMessage("No RDP file found. Logging off.");
-                    // No RDP file found - Log off immediately (per user request)
                     MessageBox.Show(
                         $"No RDP file found in '{InstallFolderPath}' matching 'RDPShell - *.rdp'. Exiting user session now.",
                         AppName,
@@ -334,7 +237,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
         catch (Exception ex)
         {
             LogDebugMessage($"CRITICAL ERROR during shell launch: {ex.Message}");
-            // Catch errors during launch (e.g., file not found, permission issues)
             MessageBox.Show($"Critical Error during sub-shell launch: {ex.Message}. Logging off now.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             Process.Start("shutdown.exe", "/l /f"); 
             return; 
@@ -345,102 +247,115 @@ Note: You must log off and log back in for changes to the shell to take effect."
         {
             LogDebugMessage($"Monitoring subshell process ID: {subShellProcess.Id}");
             
-            // Use an active monitoring loop instead of blocking WaitForExit()
+            if (rdpMode)
+            {
+                // RDP Mode: Set global process and register the event handler for cleanup
+                RDPSubShellProcess = subShellProcess;
+                SystemEvents.SessionSwitch += OnSessionSwitch;
+                LogDebugMessage("SessionSwitch event listener registered.");
+            }
+
+            // Simplified monitoring loop: just wait for the process to exit
             while (true)
             {
-                // Check if the process has exited
                 try
                 {
                     if (subShellProcess.HasExited) break;
                 }
                 catch (InvalidOperationException)
                 {
-                    // Catch exception if the process exits between checking HasExited and the loop start
                     break;
                 }
-
-                // If in RDP mode and the session is locked, actively close any blocking dialog windows.
-                if (rdpMode && IsSessionLocked())
-                {
-                    CloseBlockingWindows(subShellProcess);
-                }
-                
-                // Wait briefly to avoid high CPU usage
                 Thread.Sleep(200);
             }
             
             LogDebugMessage("Subshell process exited.");
+            
+            // Clean up RDP resources and event handler
+            if (rdpMode)
+            {
+                SystemEvents.SessionSwitch -= OnSessionSwitch;
+                CleanupCts?.Cancel(); // Ensure the cleanup loop stops if it's running
+                CleanupCts?.Dispose();
+                RDPSubShellProcess.Dispose();
+                RDPSubShellProcess = null;
+                LogDebugMessage("SessionSwitch event listener unregistered.");
+            }
         }
         
-        // 3. Exit the shell process. This signals the OS that the user session is over.
-        // FIX: Explicitly log off the user session, as only explorer.exe does this automatically.
+        // 3. Exit the shell process.
         LogDebugMessage("Subshell exited. Initiating session logoff.");
         Process.Start("shutdown.exe", "/l /f");
         
-        Application.Exit(); // Exit the shell process
+        Application.Exit();
+    }
+    
+    // --- ASYNCHRONOUS SESSION SWITCH HANDLER ---
+    private static void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        // Only interested if we are in RDP mode (RDPSubShellProcess is set)
+        if (RDPSubShellProcess == null) return;
+
+        if (e.Reason == SessionSwitchReason.SessionLock)
+        {
+            LogDebugMessage("SessionSwitch: Workstation locked. Starting asynchronous cleanup loop.");
+            
+            // If a cleanup loop is already running, cancel and dispose of the old one first, just in case.
+            CleanupCts?.Cancel();
+            CleanupCts?.Dispose();
+
+            CleanupCts = new CancellationTokenSource();
+            
+            // Start the polling loop on a background thread
+            Task.Run(() => CleanupLoop(RDPSubShellProcess.Id, CleanupCts.Token));
+        }
+        else if (e.Reason == SessionSwitchReason.SessionUnlock)
+        {
+            LogDebugMessage("SessionSwitch: Workstation unlocked. Canceling asynchronous cleanup loop.");
+            
+            // Signal the background task to stop
+            CleanupCts?.Cancel();
+            // Note: The task itself will exit gracefully upon cancellation.
+        }
+    }
+
+    // The polling loop for closing RDP dialogs when the system is locked.
+    private static void CleanupLoop(int processId, CancellationToken token)
+    {
+        LogDebugMessage($"CleanupLoop started for PID: {processId}.");
+        
+        while (!token.IsCancellationRequested)
+        {
+            // Close any blocking windows found for the RDP process ID
+            CloseBlockingWindowsById((uint)processId);
+            
+            try
+            {
+                // Wait 1 second (longer interval since it's only active when locked)
+                token.WaitHandle.WaitOne(1000); 
+            }
+            catch (OperationCanceledException)
+            {
+                // Loop breaks naturally when token is canceled.
+                break; 
+            }
+            catch (Exception ex)
+            {
+                LogDebugMessage($"CleanupLoop encountered unexpected error: {ex.Message}");
+            }
+        }
+        
+        LogDebugMessage("CleanupLoop stopped due to cancellation/unlock.");
     }
     
     // --- RDP WINDOW CLEANUP LOGIC ---
 
-    // Static callback used by EnumWindows to check if a window belongs to our RDP process 
-    // AND if it has the known blocking title.
-    private static bool EnumWindowCallback(IntPtr hWnd, IntPtr lParam)
+    // Renamed the function to take the process ID directly
+    private static void CloseBlockingWindowsById(uint subShellProcessId)
     {
-        // FIX for CS8600: Explicitly check for null and cast for safety during unboxing.
-        object? target = GCHandle.FromIntPtr(lParam).Target;
-        
-        // Ensure the target is a boxed uint (the process ID)
-        if (target is not uint ownerProcessId)
-        {
-            LogDebugMessage("Target is not a uint.");
-            return true; // Continue enumeration if the handle is invalid
-        }
-
-        uint windowProcessId;
-        
-        // Get the process ID of the window
-        GetWindowThreadProcessId(hWnd, out windowProcessId);
-        
-        if (windowProcessId == ownerProcessId)
-        {
-            // Window is owned by mstsc.exe. Now check the title.
-            StringBuilder windowTitle = new StringBuilder(256);
-            GetWindowText(hWnd, windowTitle, windowTitle.Capacity);
-
-            // Added detailed logging to debug title matching
-            LogDebugMessage($"[Enum] Found RDP Process Window (PID: {windowProcessId}). Title: '{windowTitle}' | Class: '{GetWindowClassName(hWnd)}'");
-
-
-            // Check for an exact title match to the known blocking dialog title
-            if (windowTitle.ToString() == RDPDisconnectionDialogTitle)
-            {
-                // Found a window owned by mstsc.exe with the exact title "Remote Desktop Connection". Close it.
-                LogDebugMessage($"[Enum] MATCHED blocking RDP window. Title: '{windowTitle}' - Closing.");
-                PostMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-            
-                // Return false to stop enumeration after closing one, as this should unblock mstsc.exe.
-                return false;
-            }
-        }
-        else
-        {
-            // Only log if the window does not belong to the RDP process to keep logs cleaner during normal operation
-            // LogDebugMessage($"Window does not belong to  to RDP Process ({windowProcessId} =/= {ownerProcessId})");
-        }
-
-        // Continue enumeration
-        return true;
-    }
-    
-    // Looks for any standard dialog box (now filtered by title) owned by the target process and closes it.
-    private static void CloseBlockingWindows(Process subShellProcess)
-    {
-        if (subShellProcess == null) return;
-        
         try
         {
-            // Use a GCHandle to safely pass the process ID to the static callback method
-            GCHandle gch = GCHandle.Alloc((uint)subShellProcess.Id);
+            GCHandle gch = GCHandle.Alloc(subShellProcessId);
             
             try
             {
@@ -455,31 +370,62 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         catch (Exception ex)
         {
-            // Log or handle P/Invoke errors during cleanup
             Debug.WriteLine($"Error during window cleanup: {ex.Message}");
         }
     }
+
+    // Static callback used by EnumWindows to check if a window belongs to our RDP process 
+    // AND if it has the known blocking title.
+    private static bool EnumWindowCallback(IntPtr hWnd, IntPtr lParam)
+    {
+        object? target = GCHandle.FromIntPtr(lParam).Target;
+        
+        if (target is not uint ownerProcessId)
+        {
+            LogDebugMessage("Target is not a valid uint process ID.");
+            return true;
+        }
+
+        uint windowProcessId;
+        GetWindowThreadProcessId(hWnd, out windowProcessId);
+        
+        if (windowProcessId == ownerProcessId)
+        {
+            StringBuilder windowTitle = new StringBuilder(256);
+            GetWindowText(hWnd, windowTitle, windowTitle.Capacity);
+
+            // Added detailed logging to debug title matching
+            LogDebugMessage($"[Enum] Found RDP Process Window (PID: {windowProcessId}). Title: '{windowTitle}'");
+
+            if (windowTitle.ToString() == RDPDisconnectionDialogTitle)
+            {
+                LogDebugMessage($"[Enum] MATCHED blocking RDP window. Title: '{windowTitle}' - Closing.");
+                PostMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    // Removed the old CloseBlockingWindows(Process subShellProcess) function.
+
 
     // --- CREDENTIAL CHECK LOGIC ---
 
     // Helper function to force a UAC prompt and check if elevation was accepted.
     private static bool AttemptAdminCredentialCheck()
     {
-        // We use cmd.exe as a harmless utility to launch elevated.
         ProcessStartInfo psi = new ProcessStartInfo("cmd.exe");
         psi.UseShellExecute = true; 
-        psi.Verb = "runas"; // THIS triggers the UAC prompt
+        psi.Verb = "runas"; 
 
         try
         {
-            // Start the elevated process (UAC succeeds)
             Process tempProcess = Process.Start(psi);
             
-            // Immediately close the elevated process we just started, 
-            // as its only purpose was to check credentials.
             if (tempProcess != null)
             {
-                // Give it a tiny moment to start before killing it.
                 Thread.Sleep(100); 
                 if (!tempProcess.HasExited)
                 {
@@ -487,17 +433,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
                 tempProcess.Dispose();
             }
-            return true; // UAC accepted, process started
+            return true;
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
-            // 1223 (The operation was canceled by the user) is the standard
-            // error code when the user clicks 'No' or 'Cancel' on the UAC prompt.
-            return false; // UAC was canceled
+            return false;
         }
         catch (Exception ex)
         {
-            // Catch other unexpected errors during the check
             MessageBox.Show($"Unexpected error during credential check: {ex.Message}", AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
@@ -506,15 +449,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // Helper to launch the RDP client securely
     private static Process LaunchRDP(string rdpFilePath)
     {
-        // Use ProcessStartInfo to specify mstsc.exe and the arguments
         ProcessStartInfo psi = new ProcessStartInfo("mstsc.exe", $"\"{rdpFilePath}\"");
-        psi.UseShellExecute = true; // Use shell execution for system commands like mstsc
-        // Use the null-forgiving operator '!' to assert Process.Start will return non-null on success.
+        psi.UseShellExecute = true; 
         return Process.Start(psi)!; 
     }
 
 
     // --- INSTALLER/UNINSTALLER LOGIC ---
+    // (Omitted for brevity, logic remains the same)
     private static void CheckAndManageInstallation()
     {
         LogDebugMessage("Entering CheckAndManageInstallation mode.");
@@ -522,7 +464,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
         string currentShellValue = GetUserShellRegistryValue();
         string requiredShellValue = $"\"{TargetExePath}\" {ShellFlag}";
         
-        // 1. CHECK FOR UNINSTALL
         if (currentShellValue.Equals(requiredShellValue, StringComparison.OrdinalIgnoreCase))
         {
             LogDebugMessage("Installation detected. Prompting for uninstall.");
@@ -541,7 +482,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
             return; 
         }
 
-        // 2. CHECK FOR INSTALL
         LogDebugMessage("Installation not detected. Prompting for install.");
         
         DialogResult installResult = MessageBox.Show(
@@ -558,24 +498,20 @@ Note: You must log off and log back in for changes to the shell to take effect."
     }
 
 
-    // --- INSTALLATION PROCESS ---
     private static void InstallShell(string requiredShellValue)
     {
         try
             {
             LogDebugMessage("Starting installation process.");
             
-            // FIX for IL3000: Use AppContext.BaseDirectory instead of Assembly.Location for single-file executable path.
             string currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe"); 
             
-            // 2a. Ensure the installation folder exists
             if (!Directory.Exists(InstallFolderPath))
             {
                 LogDebugMessage($"Creating install directory: {InstallFolderPath}");
                 Directory.CreateDirectory(InstallFolderPath);
             }
 
-            // 2b. Copy the executable file if not running from the target path
             if (!currentExePath.Equals(TargetExePath, StringComparison.OrdinalIgnoreCase))
             {
                 LogDebugMessage($"Copying executable from {currentExePath} to {TargetExePath}.");
@@ -589,15 +525,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 File.Copy(currentExePath, TargetExePath, true);
             }
 
-            // 2c. Write the README file
             LogDebugMessage($"Writing Readme to {ReadmePath}.");
             File.WriteAllText(ReadmePath, ReadmeFileText);
 
-            // 2d. Edit the Registry
             LogDebugMessage("Setting registry Shell value.");
             SetUserShellRegistryValue(requiredShellValue);
 
-            // 2e. Show successful install message
             LogDebugMessage("Installation successful.");
             DialogResult viewReadme = MessageBox.Show(
                 $"{AppName} installation successful! The new shell will take effect on your next login. \n\n" +
@@ -608,12 +541,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 MessageBoxIcon.Information
             );
 
-            // 2f. Launch Readme if requested - FIX: Use explicit ProcessStartInfo
             if (viewReadme == DialogResult.Yes)
             {
                 try
                 {
-                    // Explicitly use ShellExecute = true to rely on file associations for .txt files
                     Process.Start(new ProcessStartInfo(ReadmePath) { UseShellExecute = true });
                 }
                 catch (Exception ex)
@@ -630,19 +561,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
     }
 
-    // --- UNINSTALLATION PROCESS ---
     private static void UninstallShell()
     {
         try
         {
             LogDebugMessage("Starting uninstallation process.");
-            // Revert the shell setting (delete the per-user key)
-            // Use RegistryKey? to handle potential null return from OpenSubKey.
             using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true))
             {
                 if (key != null)
                 {
-                    // Deleting the "Shell" value in HKCU reverts to the HKLM shell (which is usually explorer.exe)
                     key.DeleteValue("Shell", false);
                     
                     MessageBox.Show(
@@ -656,7 +583,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             
             try
             {
-                if (File.Exists(LogFilePath)) // Added log file cleanup
+                if (File.Exists(LogFilePath))
                 {
                     File.Delete(LogFilePath);
                 }
@@ -667,7 +594,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
             catch (Exception)
             {
-                // Ignore file cleanup errors
             }
             LogDebugMessage("Uninstallation complete.");
         }
@@ -682,15 +608,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // --- REGISTRY HELPERS ---
     private static string GetUserShellRegistryValue()
     {
-        // Use RegistryKey? to handle potential null return from OpenSubKey.
         using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath))
         {
             if (key != null)
             {
-                // Use string? for the result of GetValue as it might be null.
                 string? shellValue = key.GetValue("Shell") as string; 
-                
-                // Returns an empty string if the value is null, ensuring a non-nullable string result.
                 return shellValue ?? string.Empty; 
             }
             return string.Empty;
@@ -699,7 +621,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
     private static void SetUserShellRegistryValue(string value)
     {
-        // Use RegistryKey? for OpenSubKey/CreateSubKey results.
         RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true);
         if (key == null)
         {
@@ -713,7 +634,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         else
         {
-            // This is hit only if OpenSubKey and CreateSubKey both return null.
             throw new Exception("Could not open or create the Winlogon registry key.");
         }
     }
