@@ -24,11 +24,11 @@ jobs:
 
       - name: Create minimal project
         run: |
-          dotnet new winforms -n RDPShellApp
-          (Get-Content RDPShellApp\RDPShellApp.csproj) -replace 'net9.0-windows','net8.0-windows' |
-            Set-Content RDPShellApp\RDPShellApp.csproj
-          Remove-Item RDPShellApp\Program.cs   # delete the stub
-          Move-Item RDPShell.cs RDPShellApp\RDPShell.cs
+          dotnet new winforms -n RDPShell
+          (Get-Content RDPShell\RDPShell.csproj) -replace 'net9.0-windows','net8.0-windows' |
+            Set-Content RDPShell\RDPShell.csproj
+          Remove-Item RDPShell\Program.cs   # delete the stub
+          Move-Item RDPShell.cs RDPShell\RDPShell.cs
 
       - name: Build framework-dependent exe
         run: |
