@@ -571,7 +571,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         {
             LogDebugMessage("Starting installation process.");
             
-            string currentExePath = Assembly.GetEntryAssembly()?.Location ?? Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
+            string currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
             
             Console.WriteLine("\n--- Installing ---");
 
