@@ -1,47 +1,46 @@
-name: Compile Console Test Branch
+name: Build and Release RDPShell
 
 on:
   push:
-    branches:
-      - console # Only runs on pushes to the 'console' branch
+    tags:
+      - 'v*'   # Only run when a version tag is pushed
 
 jobs:
   build:
     runs-on: windows-latest
+
     permissions:
-      contents: read # Read-only permission is sufficient
+      contents: write   # allow creating releases & uploading assets
+      # everything else (issues, pull requests, etc.) defaults to 'none'
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-        # This copies RDPShell.cs onto the runner.
+        uses: actions/checkout@v3
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v3
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '8.0.x'   # Target .NET 8 LTS
 
-      - name: Create .NET Console Project
+      - name: Create minimal project
         run: |
-          # Creates RDPShell.csproj in the current directory
-          dotnet new console --name RDPShell --output . --force
-          
-          # Remove the default Program.cs file (since RDPShell.cs contains the Main method)
+          dotnet new winforms --force
+          (Get-Content RDPShell.csproj) -replace 'net9.0-windows','net8.0-windows' |
+            Set-Content RDPShell.csproj
           Remove-Item Program.cs
+          Remove-Item Form1.cs
+          Remove-Item Form1.Designer.cs
+          Move-Item RDPShell.cs RDPShell.cs
 
-      - name: Add Required Dependencies
+      - name: Build framework-dependent exe
         run: |
-          # Adds the package needed for SystemEvents.SessionSwitch
-          dotnet add RDPShell.csproj package Microsoft.Win32.SystemEvents
+          #dotnet publish -c Release -r win-x64 --self-contained false -o ../out `
+          dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./out `
+            /p:InformationalVersion=${{ github.ref_name }}
 
-      - name: Compile and Publish Executable
-        run: |
-          # Creates a standalone executable for Windows 64-bit in the ./out directory
-          dotnet publish RDPShell.csproj -c Release -r win-x64 --self-contained true -o ./out
-
-      - name: Upload compiled executable as Artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v1
         with:
-          name: RDPShell-Console-Build
-          path: ./out/RDPShell.exe # The path to the self-contained executable
-          retention-days: 7
+          files: out/**/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
