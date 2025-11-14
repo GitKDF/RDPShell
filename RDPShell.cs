@@ -39,6 +39,10 @@ public class RDPShell
     // User32 imports for Keyboard state and window manipulation
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
+    
+    // NEW: Synchronous key state check
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int vKey); 
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
@@ -106,9 +110,9 @@ public class RDPShell
 
     private static bool IsControlKeyDown()
     {
-        // FIX: Check both explicit Left and Right Control keys (VK_LCONTROL, VK_RCONTROL) 
-        // This is more reliable than VK_CONTROL in Winlogon startup scenarios.
-        return (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 || (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
+        // FIX: Switched from GetAsyncKeyState to GetKeyState for more reliable startup detection.
+        // GetKeyState returns a negative value if the high-order bit is set (key is down).
+        return (GetKeyState(VK_LCONTROL) < 0) || (GetKeyState(VK_RCONTROL) < 0);
     }
 
     // Helper function to check if the current user session is locked.
