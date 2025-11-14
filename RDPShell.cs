@@ -15,25 +15,7 @@ using System.Text; // Required for StringBuilder
 // csc /target:winexe /reference:System.Windows.Forms.dll RDPShell.cs
 
 public class RDPShell
-{
-    // --- LOGGING HELPER ---
-    // Log file path in the user's profile directory.
-    private static readonly string LogFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "RDPShell.log");
-
-    private static void LogDebugMessage(string message)
-    {
-        try
-        {
-            // Appends the current time and the message to the log file.
-            File.AppendAllText(LogFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}{Environment.NewLine}");
-        }
-        catch (Exception ex)
-        {
-            // If logging fails (e.g., permissions), we capture the failure but don't crash the main app.
-            Debug.WriteLine($"Logging failed: {ex.Message}");
-        }
-    }
-    
+{    
     // --- NATIVE IMPORTS (P/Invoke) ---
     
     // User32 imports for Keyboard state and window manipulation
@@ -58,7 +40,7 @@ public class RDPShell
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
-    // New P/Invoke for getting the window title
+    // P/Invoke for getting the window title
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
@@ -109,17 +91,76 @@ public class RDPShell
     private const int VK_LWIN = 0x5B; // Left Windows Key
     private const int VK_RWIN = 0x5C; // Right Windows Key
     private const uint WM_CLOSE = 0x0010;
-    // Standard Windows Dialog Class Name (Kept for reference, but we use title check now)
     private const string StandardDialogClassName = "#32770"; 
 
     // Constants for the persistent key check
     private const int INITIAL_DELAY_MS = 500; // Single delay before polling
-    // 0x8000: Key is currently held down (State bit)
     private const short KEY_DOWN_BIT = unchecked((short)0x8000); 
-    // 0x0001: Key was pressed since the last call to GetAsyncKeyState (Transition bit)
     private const short KEY_PRESSED_BIT = 0x0001; 
-    // Combined bits we are checking for
     private const short KEY_CHECK_MASK = KEY_DOWN_BIT | KEY_PRESSED_BIT; 
+
+    // --- CONSTANTS AND CONFIGURATION ---
+    private const string AppName = "RDPShell";
+    private const string ShellFlag = "-shell";
+    // Per-user registry path for the shell override
+    private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"; 
+    private static readonly string UserProfilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    private static readonly string InstallFolderPath = Path.Combine(UserProfilePath, AppName);
+    
+    // Log file path in the installation directory (Moved here to ensure InstallFolderPath is defined first).
+    private static readonly string LogFilePath = Path.Combine(InstallFolderPath, "RDPShell.log");
+
+    private static readonly string TargetExePath = Path.Combine(InstallFolderPath, AppName + ".exe");
+    private static readonly string ReadmePath = Path.Combine(InstallFolderPath, "readme.txt");
+    private const string DefaultShell = "explorer.exe";
+    // Exact title of the RDP dialog that often blocks logoff when disconnected/locked.
+    private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection"; 
+
+    
+    // Multi-line text for the Readme file.
+    private static readonly string ReadmeFileText = 
+$@"--- {AppName} Readme ---
+This utility has been installed as your custom Windows Shell.
+
+Install Path: {InstallFolderPath}
+User: {Environment.UserName}
+
+Primary Function (On Login):
+1. The program checks if the **Windows Key** is being held down or was pressed during the login sequence.
+2. If the Windows Key is held/pressed: It requires administrative credentials. If accepted, it launches 
+   the default Windows shell ({DefaultShell}). If canceled, it logs off.
+3. If the Windows Key is NOT held/pressed: It searches for an RDP file named 'RDPShell - *.rdp' 
+   in the install folder and launches the Remote Desktop Client (mstsc.exe) 
+   using that file. If no RDP file is found, it logs off.
+
+To Uninstall:
+Simply run the '{AppName}.exe' file from any location (e.g., double-click it).
+The program will detect the installation and prompt you for uninstallation.
+Note: You must log off and log back in for changes to the shell to take effect.";
+
+    // --- LOGGING HELPER (Moved here) ---
+    private static void LogDebugMessage(string message)
+    {
+        try
+        {
+            // Appends the current time and the message to the log file.
+            File.AppendAllText(LogFilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}{Environment.NewLine}");
+        }
+        catch (Exception ex)
+        {
+            // If logging fails (e.g., permissions), we capture the failure but don't crash the main app.
+            Debug.WriteLine($"Logging failed: {ex.Message}");
+        }
+    }
+    
+    // --- UTILITY FUNCTIONS ---
+    
+    private static string GetWindowClassName(IntPtr hWnd)
+    {
+        StringBuilder className = new StringBuilder(256);
+        GetClassName(hWnd, className, className.Capacity);
+        return className.ToString();
+    }
 
     private static bool IsWinKeyDown()
     {
@@ -168,43 +209,7 @@ public class RDPShell
         return false;
     }
 
-
-    // --- CONSTANTS AND CONFIGURATION ---
-    private const string AppName = "RDPShell";
-    private const string ShellFlag = "-shell";
-    // Per-user registry path for the shell override
-    private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon"; 
-    private static readonly string UserProfilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-    private static readonly string InstallFolderPath = Path.Combine(UserProfilePath, AppName);
-    private static readonly string TargetExePath = Path.Combine(InstallFolderPath, AppName + ".exe");
-    private static readonly string ReadmePath = Path.Combine(InstallFolderPath, "readme.txt");
-    private const string DefaultShell = "explorer.exe";
-    // Exact title of the RDP dialog that often blocks logoff when disconnected/locked.
-    private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection"; 
-
     
-    // Multi-line text for the Readme file.
-    private static readonly string ReadmeFileText = 
-$@"--- {AppName} Readme ---
-This utility has been installed as your custom Windows Shell.
-
-Install Path: {InstallFolderPath}
-User: {Environment.UserName}
-
-Primary Function (On Login):
-1. The program checks if the **Windows Key** is being held down or was pressed during the login sequence.
-2. If the Windows Key is held/pressed: It requires administrative credentials. If accepted, it launches 
-   the default Windows shell ({DefaultShell}). If canceled, it logs off.
-3. If the Windows Key is NOT held/pressed: It searches for an RDP file named 'RDPShell - *.rdp' 
-   in the install folder and launches the Remote Desktop Client (mstsc.exe) 
-   using that file. If no RDP file is found, it logs off.
-
-To Uninstall:
-Simply run the '{AppName}.exe' file from any location (e.g., double-click it).
-The program will detect the installation and prompt you for uninstallation.
-Note: You must log off and log back in for changes to the shell to take effect.";
-    
-
     // --- MAIN ENTRY POINT ---
     [STAThread] // Required for System.Windows.Forms.MessageBox
     public static void Main(string[] args)
@@ -285,13 +290,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                     if (rdpFiles.Length > 1)
                     {
                         // Found multiple RDP files (use the first one and log)
-                        LogDebugMessage($"Found multiple RDP files. Using: {rdpFiles[0]}.");
-                        //MessageBox.Show(
-                        //    $"Multiple RDP files found. Using the first one: {Path.GetFileName(rdpFiles[0])}. Launching mstsc.exe...",
-                        //    AppName,
-                        //    MessageBoxButtons.OK,
-                        //    MessageBoxIcon.Warning
-                        //);
+                        LogDebugMessage($"Found multiple RDP files. Using the first one: {Path.GetFileName(rdpFiles[0])}.");
                     }
                     
                     subShellProcess = LaunchRDP(rdpFiles[0]);
@@ -371,6 +370,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         // Ensure the target is a boxed uint (the process ID)
         if (target is not uint ownerProcessId)
         {
+            LogDebugMessage("Target is not a uint.");
             return true; // Continue enumeration if the handle is invalid
         }
 
@@ -385,16 +385,24 @@ Note: You must log off and log back in for changes to the shell to take effect."
             StringBuilder windowTitle = new StringBuilder(256);
             GetWindowText(hWnd, windowTitle, windowTitle.Capacity);
 
+            // Added detailed logging to debug title matching
+            LogDebugMessage($"[Enum] Found RDP Process Window (PID: {windowProcessId}). Title: '{windowTitle}' | Class: '{GetWindowClassName(hWnd)}'");
+
+
             // Check for an exact title match to the known blocking dialog title
             if (windowTitle.ToString() == RDPDisconnectionDialogTitle)
             {
                 // Found a window owned by mstsc.exe with the exact title "Remote Desktop Connection". Close it.
-                LogDebugMessage($"Closing blocking RDP window with title: '{windowTitle}'");
+                LogDebugMessage($"[Enum] MATCHED blocking RDP window. Title: '{windowTitle}' - Closing.");
                 PostMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
             
                 // Return false to stop enumeration after closing one, as this should unblock mstsc.exe.
                 return false;
             }
+        }
+        else
+        {
+            LogDebugMessage($"Window does not belong to  to RDP Process ({windowProcessId} =/= {ownerProcessId})");
         }
 
         // Continue enumeration
