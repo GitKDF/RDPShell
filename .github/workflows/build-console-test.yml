@@ -3,44 +3,49 @@ name: Compile Console Test Branch
 on:
   push:
     branches:
-      - console # Only run on the 'console' branch
+      - console # Only runs on pushes to the 'console' branch
 
 jobs:
   build:
     runs-on: windows-latest
-
-    # No need for the 'contents: write' permission since we are not creating a release
     permissions:
-      contents: read
+      contents: read # Read-only permission is sufficient
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        # This copies RDPShell.cs onto the runner.
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: Compile with csc.exe
+      - name: Create .NET Console Project (Targeting Windows)
         run: |
-          # Create the output directory
-          mkdir out
+          # 1. Use --framework net8.0-windows to suppress CA1416 warnings
+          # 2. Creates RDPShell.csproj in the current directory
+          dotnet new console --name RDPShell --output . --force --framework net8.0-windows 
           
-          # Compile the single C# file into a Console application
-          csc /target:exe /out:./out/RDPShell.exe RDPShell.cs `
-            /r:System.Runtime.InteropServices.dll `
-            /r:Microsoft.Win32.SystemEvents.dll
-          
-          Write-Output "Compilation successful. Executable created: ./out/RDPShell.exe"
+          # Remove the default Program.cs file (since RDPShell.cs contains the Main method)
+          Remove-Item Program.cs
 
-      # 1. NEW: Upload the compiled executable as an Artifact
-      - name: Upload compiled executable
+      - name: Add Required Dependencies
+        run: |
+          # Adds the package needed for SystemEvents/Registry access
+          dotnet add RDPShell.csproj package Microsoft.Win32.SystemEvents
+
+      - name: Compile and Publish Single-File Executable
+        run: |
+          # /p:PublishSingleFile=true: Creates a single executable file.
+          # /p:PublishTrimmed=true: Reduces the size of the executable.
+          # -r win-x64: Targets Windows 64-bit for the self-contained app.
+          dotnet publish RDPShell.csproj -c Release -r win-x64 --self-contained true `
+            /p:PublishSingleFile=true /p:PublishTrimmed=true -o ./out
+
+      - name: Upload compiled executable as Artifact
         uses: actions/upload-artifact@v4
         with:
-          # This name appears on the GitHub Actions summary page
           name: RDPShell-Console-Build
-          # Path to the compiled executable
-          path: out/RDPShell.exe
-          # Keep artifact for 7 days
+          path: ./out/RDPShell.exe # The path to the self-contained executable
           retention-days: 7
