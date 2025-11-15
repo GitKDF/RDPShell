@@ -87,7 +87,13 @@ public class RDPShell
     private const string AdminCheckFlag = "-admincheck";
 
     // Per-user registry path for the shell override
-    private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
+    private const string WinlogonRegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
+    // Task Manager Suppression Registry Constants
+    private const string TaskMgrPoliciesPath = @"Software\Microsoft\Windows\CurrentVersion\Policies\System";
+    private const string DisableTaskMgrValueName = "DisableTaskMgr";
+    // Value 1 means disabled/suppressed, 0 or deletion means enabled/visible
+    private const int DisableTaskMgrValue = 1; 
+
     private static readonly string UserProfilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private static readonly string InstallFolderPath = Path.Combine(UserProfilePath, AppName);
 
@@ -624,35 +630,58 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
         if (currentShellValue.Equals(requiredShellValue, StringComparison.OrdinalIgnoreCase))
         {
-            LogDebugMessage("Installation detected. Prompting for uninstall.");
+            // --- SHELL IS INSTALLED ---
+            LogDebugMessage("Installation detected. Prompting for management options.");
 
             Console.WriteLine($"========================================================================");
             Console.WriteLine($" {AppName} Shell Detected");
             Console.WriteLine($"========================================================================");
             Console.WriteLine($"The {AppName} shell is currently installed for user {Environment.UserName}.");
-            Console.Write($"Would you like to UNINSTALL {AppName} and revert to the default shell? (Press y, or any other key to exit): ");
+            Console.WriteLine($"What would you like to do?");
+            Console.WriteLine($"(C)hange \"Task Manager\" suppression on Ctrl+Alt+Del screen");
+            Console.WriteLine($"(U)ninstall {AppName} shell and revert to default");
+            Console.Write($"\n(Press C or U, or any other key to exit): ");
 
-            char input = Console.ReadKey(true).KeyChar;
+            char input = char.ToLower(Console.ReadKey(true).KeyChar);
+            Console.WriteLine(); // Newline after key press
 
-            if (char.ToLower(input) == 'y')
+            if (input == 'c')
             {
-                UninstallShell();
+                Console.Clear();
+                ChangeTaskManagerSuppression();
+            }
+            else if (input == 'u')
+            {
+                Console.Clear();
+                Console.Write("Are you sure you wish to UNINSTALL RDPShell? (Press y to confirm, or any other key to cancel): ");
+                char confirm = char.ToLower(Console.ReadKey(true).KeyChar);
+
+                if (confirm == 'y')
+                {
+                    UninstallShell();
+                }
+                else
+                {
+                    Console.WriteLine("\nUninstallation canceled. Press any key to exit.");
+                    Console.ReadKey(true);
+                }
             }
             else
             {
-                Console.WriteLine("\nUninstallation canceled. Press any key to exit.");
+                Console.WriteLine("Canceled. Press any key to exit.");
                 Console.ReadKey(true);
             }
             return;
         }
 
+        // --- SHELL IS NOT INSTALLED ---
         LogDebugMessage("Installation not detected. Prompting for install.");
 
         Console.WriteLine($"========================================================================");
         Console.WriteLine($" {AppName} Shell Not Installed");
         Console.WriteLine($"========================================================================");
         Console.WriteLine($"The {AppName} shell is currently NOT installed for user {Environment.UserName}.");
-        Console.Write($"Would you like to INSTALL {AppName} as your default shell? (Press y, or any other key to exit): ");
+        Console.Write($"Would you like to INSTALL {AppName} as your default shell? (Press y to confirm, or any other key to exit): ");
 
         char installInput = Console.ReadKey(true).KeyChar;
 
@@ -725,6 +754,23 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.WriteLine("\n--- Installation Successful ---");
             Console.WriteLine($"{AppName} is successfully installed as your shell.");
             Console.WriteLine("The new shell will take effect on your next login.");
+            
+            // TASK MANAGER PROMPT
+            Console.WriteLine($"\n--- Task Manager Suppression ---");
+            Console.Write("Would you like to disable \"Task Manager\" on the Ctrl+Alt+Del screen? (Press y to confirm, or any other key to keep enabled): ");
+
+            char suppressInput = Console.ReadKey(true).KeyChar;
+
+            if (char.ToLower(suppressInput) == 'y')
+            {
+                SuppressTaskManager();
+                Console.WriteLine("\nTask Manager suppression enabled. It will not be visible on the Ctrl+Alt+Del screen after next login.");
+            }
+            else
+            {
+                Console.WriteLine("\nTask Manager will remain enabled.");
+            }
+            
             Console.WriteLine($"\nReadme file created at: {ReadmePath}");
 
             Console.Write($"Would you like to view the readme now? (Press y, or any other key to exit): ");
@@ -759,7 +805,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             LogDebugMessage("Starting uninstallation process.");
             Console.WriteLine("\n--- Uninstalling ---");
 
-            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true))
+            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(WinlogonRegistryKeyPath, true))
             {
                 if (key != null)
                 {
@@ -778,7 +824,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("2. Could not delete Readme file. ({ReadmePath})");
+                    Console.WriteLine("2. Could not delete Readme file.");
                     LogDebugMessage($"Failed to delete Readme file: {ex.Message}");
                 }
             }
@@ -797,7 +843,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"3. Could not delete Log file. ({LogFilePath})");
+                    Console.WriteLine("3. Could not delete Log file.");
                     LogDebugMessage($"Failed to delete Log file: {ex.Message}");
                 }
             }
@@ -805,6 +851,28 @@ Note: You must log off and log back in for changes to the shell to take effect."
             {
                 Console.WriteLine("3. Log file not found.");
             }
+            
+            // NEW TASK MANAGER RESTORATION CHECK
+            bool wasTaskMgrSuppressed = IsTaskManagerSuppressed();
+            if (wasTaskMgrSuppressed)
+            {
+                Console.WriteLine($"\n--- Task Manager Restoration ---");
+                Console.WriteLine("Task Manager on the Ctrl+Alt+Del screen is currently disabled.");
+                Console.Write("Would you like to RESTORE that functionality? (Press y to restore, or any other key to keep it disabled): ");
+
+                char restoreInput = Console.ReadKey(true).KeyChar;
+
+                if (char.ToLower(restoreInput) == 'y')
+                {
+                    RestoreTaskManager();
+                    Console.WriteLine("\nTask Manager restored. It will be visible on the Ctrl+Alt+Del screen after next login.");
+                }
+                else
+                {
+                    Console.WriteLine("\nTask Manager will remain disabled until manually re-enabled.");
+                }
+            }
+
 
             LogDebugMessage("Uninstallation complete.");
 
@@ -823,12 +891,149 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.ReadKey(true);
         }
     }
+    
+    // --- TASK MANAGER REGISTRY HELPERS ---
+
+    // Check if the Task Manager is currently disabled (i.e., DisableTaskMgr is set to 1)
+    private static bool IsTaskManagerSuppressed()
+    {
+        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath))
+        {
+            if (key != null)
+            {
+                // Check if the value exists and is set to 1
+                object? value = key.GetValue(DisableTaskMgrValueName);
+                if (value is int intValue && intValue == DisableTaskMgrValue)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Set the registry value to disable (suppress) Task Manager
+    private static void SuppressTaskManager()
+    {
+        LogDebugMessage($"Suppressing Task Manager (Setting {DisableTaskMgrValueName}=1).");
+        RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath, true);
+        if (key == null)
+        {
+            // Policies/System key might not exist, create it if necessary
+            key = Registry.CurrentUser.CreateSubKey(TaskMgrPoliciesPath, true);
+        }
+    
+        if (key == null)
+        {
+            throw new Exception("Could not open or create the Task Manager Policies registry key.");
+        }
+    
+        using (key)
+        {
+            try
+            {
+                // Set DWORD value to 1 to disable Task Manager
+                key.SetValue(DisableTaskMgrValueName, DisableTaskMgrValue, RegistryValueKind.DWord);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                LogDebugMessage($"Failed to suppress Task Manager due to insufficient permissions: {ex.Message}");
+                throw;
+            }
+            catch (IOException ex)
+            {
+                LogDebugMessage($"Failed to suppress Task Manager due to registry I/O error: {ex.Message}");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception("Could not open/create/set the Task Manager Policies registry key.", ex);
+            }
+        }
+    }
+    
+    // Delete the registry value to enable (restore) Task Manager
+    private static void RestoreTaskManager()
+    {
+        LogDebugMessage($"Restoring Task Manager (Deleting {DisableTaskMgrValueName}).");
+    
+        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath, writable: true))
+        {
+            if (key != null)
+            {
+                try
+                {
+                    // DeleteValue with throwOnMissingValue=false avoids exceptions if the value doesn't exist
+                    key.DeleteValue(DisableTaskMgrValueName, throwOnMissingValue: false);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    LogDebugMessage($"Failed to restore Task Manager due to insufficient permissions: {ex.Message}");
+                    throw;
+                }
+                catch (IOException ex)
+                {
+                    LogDebugMessage($"Failed to restore Task Manager due to registry I/O error: {ex.Message}");
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception("Could not delete the Disable Task Manager registry key.", ex);
+                }
+            }
+            else
+            {
+                LogDebugMessage("Task Manager policies key not found; nothing to restore.");
+            }
+        }
+    }
+    
+    // --- TASK MANAGER INTERACTIVE MANAGEMENT ---
+    private static void ChangeTaskManagerSuppression()
+    {
+        LogDebugMessage("Entering ChangeTaskManagerSuppression mode.");
+        Console.WriteLine($"\n========================================================================");
+        Console.WriteLine($" Task Manager Suppression Management");
+        Console.WriteLine($"========================================================================");
+
+        bool isSuppressed = IsTaskManagerSuppressed();
+        string status = isSuppressed ? "DISABLED (hidden)" : "ENABLED (visible)";
+        Console.WriteLine($"Current Status: Task Manager is currently {status} on Ctrl+Alt+Del screen.");
+        Console.WriteLine("------------------------------------------------------------------------");
+        
+        // Use a single, consistent menu as requested: (E)nable or (R)emove (Suppress)
+        Console.WriteLine("Options:");
+        Console.WriteLine("(E)nable \"Task Manager\" (restores functionality, deletes registry key)");
+        Console.WriteLine("(R)emove \"Task Manager\" (suppresses functionality, sets registry key)");
+        Console.Write("\n(Press E or R, or any other key to cancel): ");
+
+        char input = char.ToLower(Console.ReadKey(true).KeyChar);
+        Console.WriteLine(); // Newline
+
+        if (input == 'e')
+        {
+            RestoreTaskManager();
+            Console.WriteLine("\nTask Manager restored (enabled) successfully. It will be visible on Ctrl+Alt+Del screen after next login.");
+        }
+        else if (input == 'r')
+        {
+            SuppressTaskManager();
+            Console.WriteLine("\nTask Manager suppression (remove from screen) enabled successfully. It will not be visible on Ctrl+Alt+Del screen after next login.");
+        }
+        else
+        {
+            Console.WriteLine("\nChange canceled. Press any key to return to main menu.");
+        }
+        
+        Console.WriteLine("\nPress any key to exit.");
+        Console.ReadKey(true);
+    }
 
 
     // --- REGISTRY HELPERS ---
     private static string GetUserShellRegistryValue()
     {
-        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath))
+        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(WinlogonRegistryKeyPath))
         {
             if (key != null)
             {
@@ -841,10 +1046,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
     private static void SetUserShellRegistryValue(string value)
     {
-        RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true);
+        RegistryKey? key = Registry.CurrentUser.OpenSubKey(WinlogonRegistryKeyPath, true);
         if (key == null)
         {
-            key = Registry.CurrentUser.CreateSubKey(RegistryKeyPath, true);
+            key = Registry.CurrentUser.CreateSubKey(WinlogonRegistryKeyPath, true);
         }
 
         if (key != null)
