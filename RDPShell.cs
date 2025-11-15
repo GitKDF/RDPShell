@@ -163,6 +163,32 @@ Note: You must log off and log back in for changes to the shell to take effect."
         return MessageBox(IntPtr.Zero, text, caption, type);
     }
 
+    // --- SHUTDOWN HELPER ---
+    // Initiates logoff without causing a console window flash by setting ProcessStartInfo properties.
+    private static void InitiateLogoff()
+    {
+        LogDebugMessage("Starting silent logoff (shutdown.exe /l /f).");
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = "shutdown.exe",
+                Arguments = "/l /f",
+                // CRITICAL: Prevent console window from appearing
+                CreateNoWindow = true, 
+                // CRITICAL: Required for CreateNoWindow=true to work reliably on console executables
+                UseShellExecute = false 
+            };
+            Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            LogDebugMessage($"ERROR: Failed to initiate logoff silently: {ex.Message}. Falling back to non-silent.");
+            // Fallback to the non-silent method if the silent one fails (still better than failing to logoff)
+            Process.Start("shutdown.exe", "/l /f");
+        }
+    }
+
     // --- UTILITY FUNCTIONS ---
 
     private static string GetWindowClassName(IntPtr hWnd)
@@ -346,7 +372,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 AppName,
                 MB_ICONERROR | MB_OK
             );
-            Process.Start("shutdown.exe", "/l /f");
+            // Use silent logoff helper
+            InitiateLogoff();
             return;
         }
 
@@ -390,7 +417,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
         // 3. Exit the shell process.
         LogDebugMessage("Subshell exited. Initiating session logoff.");
-        Process.Start("shutdown.exe", "/l /f");
+        // Use silent logoff helper
+        InitiateLogoff();
 
         Environment.Exit(0);
     }
@@ -509,7 +537,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
                 // Force logoff immediately.
                 // This will end both the RDP process and the RDPShell process (triggering the WaitForExit in RunAsShell).
-                Process.Start("shutdown.exe", "/l /f");
+                // Use silent logoff helper
+                InitiateLogoff();
 
                 // Stop enumeration early, as the entire session is about to terminate.
                 return false;
