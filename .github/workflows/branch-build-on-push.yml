@@ -1,9 +1,10 @@
-name: Compile Console Test Branch
+name: Branch Build on Push
 
 on:
   push:
     branches:
-      - console # Only runs on pushes to the 'console' branch
+      - '**'          # Matches all branches
+      - '!main'       # Excludes the 'main' branch
 
 jobs:
   build:
