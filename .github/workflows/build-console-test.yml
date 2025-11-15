@@ -35,6 +35,11 @@ jobs:
           # of the default version number and force the correct 'net8.0-windows' value.
           (Get-Content RDPShell.csproj) -replace '<TargetFramework>.*</TargetFramework>','<TargetFramework>net8.0-windows</TargetFramework><WindowsSubsystem>Windows</WindowsSubsystem>' |
           Set-Content RDPShell.csproj
+
+          # 5. NEW CRITICAL STEP: Change the OutputType from 'Exe' (Console) to 'WinExe' (GUI)
+          # This is the step that actually suppresses the console window on launch.
+          (Get-Content RDPShell.csproj) -replace '<OutputType>Exe</OutputType>','<OutputType>WinExe</OutputType>' |
+          Set-Content RDPShell.csproj
           
       - name: Add Required Dependencies
         run: |
