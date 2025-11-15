@@ -725,7 +725,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.WriteLine("\n--- Installation Successful ---");
             Console.WriteLine($"{AppName} is successfully installed as your shell.");
             Console.WriteLine("The new shell will take effect on your next login.");
-            Console.WriteLine($"Readme file created at: {ReadmePath}");
+            Console.WriteLine($"\nReadme file created at: {ReadmePath}");
 
             Console.Write($"Would you like to view the readme now? (Press y, or any other key to exit): ");
 
@@ -768,23 +768,42 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
             }
 
-            try
+            // Attempt to delete Readme file first
+            if (File.Exists(ReadmePath))
             {
-                if (File.Exists(LogFilePath))
-                {
-                    File.Delete(LogFilePath);
-                    Console.WriteLine("2. Log file deleted.");
-                }
-                if (File.Exists(ReadmePath))
+                try
                 {
                     File.Delete(ReadmePath);
-                    Console.WriteLine("3. Readme file deleted.");
+                    Console.WriteLine("2. Readme file deleted.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("2. Could not delete Readme file.");
+                    LogDebugMessage($"Failed to delete Readme file: {ex.Message}");
                 }
             }
-            catch (Exception ex)
+            else
             {
-                LogDebugMessage($"Failed to delete files during uninstall: {ex.Message}");
-                Console.WriteLine($"    ! WARNING: Failed to delete log/readme files: {ex.Message}");
+                Console.WriteLine("2. Readme file not found.");
+            }
+
+            // Attempt to delete Log file second
+            if (File.Exists(LogFilePath))
+            {
+                try
+                {
+                    File.Delete(LogFilePath);
+                    Console.WriteLine("3. Could not delete Log file.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("3. Log file could not delete.");
+                    LogDebugMessage($"Failed to delete Log file: {ex.Message}");
+                }
+            }
+            else
+            {
+                Console.WriteLine("3. Log file not found.");
             }
 
             LogDebugMessage("Uninstallation complete.");
