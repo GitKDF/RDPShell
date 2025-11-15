@@ -122,7 +122,7 @@ briefly upon connection, but then go away completely.  Ctrl+Alt+Break will
 still toggle full screen mode, and closing the RDP window will trigger log off.
 
 To access the normal shell environment (explorer.exe) repeatedly press
-the Windows key after entering your login credentials or clicking login.
+the Windows key after entering your login credentials or clicking 'Sign in'.
 If the user does not have Administrative privileges, a UAC prompt will
 ask you to provide them.
 
