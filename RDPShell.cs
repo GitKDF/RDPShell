@@ -23,9 +23,6 @@ public class RDPShell
     [DllImport("user32.dll")]
     private static extern short GetKeyState(int vKey);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-
     // User32 imports for window enumeration
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -80,12 +77,6 @@ public class RDPShell
     private const uint MB_ICONWARNING = 0x00000030;
     private const uint MB_ICONINFORMATION = 0x00000040;
 
-    // MessageBox return codes
-    private const int IDOK = 1;
-    private const int IDYES = 6;
-    private const int IDNO = 7;
-    private const int IDCANCEL = 2; // Not used but good to have
-
     // App constants
     private const string AppName = "RDPShell";
     private const string ShellFlag = "-shell";
@@ -120,14 +111,14 @@ User: {Environment.UserName}
 
 This utility searches for an RDP file named 'RDPShell*.rdp' in the
 install folder and launches the Remote Desktop Client (mstsc.exe)
-using that file. If no RDP file is found, it logs the user out.
+using that file.  If no RDP file is found, it logs the user out.
 
 Feel free to add your own annotation to the filename after RDPShell,
 e.g. the name of the computer you are connecting to.
 
 You may want to edit the RDP file manually and change displayconnectionbar:i:1
 to displayconnectionbar:i:0 to disable the connection bar.  It will still show
-briefly upon connection, but then go away completely. Ctrl+Alt+Break will
+briefly upon connection, but then go away completely.  Ctrl+Alt+Break will
 still toggle full screen mode, and closing the RDP window will trigger log off.
 
 To access the normal shell environment (explorer.exe) repeatedly press
@@ -199,7 +190,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         return false;
     }
 
-    // --- CONSOLE MANAGEMENT (NEW) ---
+    // --- CONSOLE MANAGEMENT ---
     private static void EnsureConsoleAttachedOrAllocated()
     {
         // 1. Try to attach to the console of the process that launched us (if any).
@@ -369,7 +360,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 // RDP Mode: Set global process and register the event handler for cleanup
                 RDPSubShellProcess = subShellProcess;
                 SystemEvents.SessionSwitch += OnSessionSwitch;
-                LogDebugMessage("SessionSwitch event listener registered.");
+                LogDebugMessage("SessionSwitch event listener registered for RDP mode.");
             }
 
             // Simplified monitoring loop: block until the subshell process exits.
@@ -379,7 +370,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
             catch (InvalidOperationException)
             {
-                // Process may have already exited and been disposed by an external event.
+                // Process may have already exited and been disposed by an external event (e.g., logoff triggered by CleanupLoop).
                 LogDebugMessage("Subshell process was already disposed or exited.");
             }
 
@@ -407,8 +398,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // --- ASYNCHRONOUS SESSION SWITCH HANDLER ---
     private static void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     {
-        // Only interested if we are in RDP mode (RDPSubShellProcess is set)
-        if (RDPSubShellProcess == null) return;
+        // Only interested if we are in RDP mode (RDPSubShellProcess is set and running)
+        if (RDPSubShellProcess == null || RDPSubShellProcess.HasExited) return;
 
         if (e.Reason == SessionSwitchReason.SessionLock)
         {
@@ -421,6 +412,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             CleanupCts = new CancellationTokenSource();
 
             // Start the polling loop on a background thread
+            // Note: The loop runs until unlocked OR logoff is triggered.
             Task.Run(() => CleanupLoop(RDPSubShellProcess.Id, CleanupCts.Token));
         }
         else if (e.Reason == SessionSwitchReason.SessionUnlock)
@@ -432,15 +424,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
     }
 
-    // The polling loop for closing RDP dialogs when the system is locked.
+    // The polling loop for forced logoff when a blocking RDP dialog appears while the system is locked.
     private static void CleanupLoop(int processId, CancellationToken token)
     {
         LogDebugMessage($"CleanupLoop started for PID: {processId}.");
 
         while (!token.IsCancellationRequested)
         {
-            // Close any blocking windows found for the RDP process ID
-            CloseBlockingWindowsById((uint)processId);
+            // The method called here will trigger logoff if it finds a match.
+            PollAndLogoffIfBlockingWindowFound((uint)processId);
 
             try
             {
@@ -454,7 +446,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
             catch (Exception ex)
             {
-                LogDebugMessage($"CleanupLoop encountered unexpected error: {ex.Message}");
+                LogDebugMessage($"CleanupLoop encountered unexpected error during wait: {ex.Message}");
             }
         }
 
@@ -462,15 +454,16 @@ Note: You must log off and log back in for changes to the shell to take effect."
     }
 
     // --- RDP WINDOW CLEANUP LOGIC ---
-    private static void CloseBlockingWindowsById(uint subShellProcessId)
+
+    // New method to wrap the enumeration and handle exceptions.
+    private static void PollAndLogoffIfBlockingWindowFound(uint subShellProcessId)
     {
         try
         {
             GCHandle gch = GCHandle.Alloc(subShellProcessId);
-
             try
             {
-                // Enumerate all top-level windows
+                // Enumerate all top-level windows (the callback will handle the logoff)
                 EnumWindows(EnumWindowCallback, GCHandle.ToIntPtr(gch));
             }
             finally
@@ -481,9 +474,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Error during window cleanup: {ex.Message}");
+            // Catch and log, but don't crash the loop
+            LogDebugMessage($"Error during window cleanup poll: {ex.Message}");
         }
     }
+
 
     // Static callback used by EnumWindows to check if a window belongs to our RDP process
     // AND if it has the known blocking title.
@@ -507,34 +502,17 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
             LogDebugMessage($"[Enum] Found RDP Process Window (PID: {windowProcessId}). Title: '{windowTitle}'");
             
+            // Check only for the specific blocking title
             if (windowTitle.ToString() == RDPDisconnectionDialogTitle)
             {
-                LogDebugMessage("MATCHED blocking RDP window. Attempting soft close via simulated click (IDOK).");
-                
-                // Attempt 1: Simulate pressing the OK/default button (ID=1)
-                bool success = PostMessage(hWnd, WM_COMMAND, IDOK_WPARAM, IntPtr.Zero);
-                
-                // Wait a moment for the window to process the click.
-                Thread.Sleep(500);
-                
-                // Check if the RDP process is still running after the attempt.
-                if (RDPSubShellProcess != null && !RDPSubShellProcess.HasExited)
-                {
-                    LogDebugMessage("Soft close failed or didn't exit process. Resorting to Process.Kill().");
-                    
-                    // AGGRESSIVE FALLBACK (Your existing Kill logic)
-                    try
-                    {
-                        RDPSubShellProcess.Kill();
-                        LogDebugMessage("RDP Subshell process killed successfully.");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogDebugMessage($"Failed to kill RDP Subshell process: {ex.Message}");
-                    }
-                }
-                
-                return false; // Stop enumeration after process has ended
+                LogDebugMessage($"[Enum] Found MATCHING blocking RDP window: Title='{title}'. INITIATING LOGOFF.");
+
+                // Force logoff immediately.
+                // This will end both the RDP process and the RDPShell process (triggering the WaitForExit in RunAsShell).
+                Process.Start("shutdown.exe", "/l /f");
+
+                // Stop enumeration early, as the entire session is about to terminate.
+                return false;
             }
         }
 
