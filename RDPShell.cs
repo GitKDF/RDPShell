@@ -778,7 +778,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("2. Could not delete Readme file.");
+                    Console.WriteLine("2. Could not delete Readme file. ({ReadmePath})");
                     LogDebugMessage($"Failed to delete Readme file: {ex.Message}");
                 }
             }
@@ -793,11 +793,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 try
                 {
                     File.Delete(LogFilePath);
-                    Console.WriteLine("3. Could not delete Log file.");
+                    Console.WriteLine("3. Log file deleted.");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("3. Log file could not delete.");
+                    Console.WriteLine($"3. Could not delete Log file. ({LogFilePath})");
                     LogDebugMessage($"Failed to delete Log file: {ex.Message}");
                 }
             }
