@@ -561,6 +561,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
         try
         {
+            // When running as a shell, the system may need time to stabilize
+            // input and windowing after logon before reliably launching a secure-desktop UAC prompt.
+            LogDebugMessage("Delaying 1000ms to stabilize environment before launching UAC check.");
+            Thread.Sleep(1000);
+            
             // Start the process, which will trigger the UAC prompt
             Process? tempProcess = Process.Start(psi);
 
