@@ -673,65 +673,52 @@ Note: You must log off and log back in for changes to the shell to take effect."
         try
         {
             LogDebugMessage("Starting installation process.");
-
-            string currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
-
-            Console.WriteLine("\n--- Installing ---");
-
+            
+            // --- FIX FOR IL3000 WARNING / SINGLE-FILE DEPLOYMENT ---
+            // Use Environment.ProcessPath to reliably get the full path to the running executable.
+            // Fallback to the old method (BaseDirectory) if ProcessPath is null (shouldn't happen).
+            string currentExePath = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
+            
             if (!Directory.Exists(InstallFolderPath))
             {
                 LogDebugMessage($"Creating install directory: {InstallFolderPath}");
                 Console.WriteLine($"1. Creating install directory: {InstallFolderPath}");
                 Directory.CreateDirectory(InstallFolderPath);
             }
-            else
-            {
-                Console.WriteLine($"1. Verifying install directory: {InstallFolderPath}");
-            }
-
-            Thread.Sleep(500);
+    
             if (!currentExePath.Equals(TargetExePath, StringComparison.OrdinalIgnoreCase))
             {
                 LogDebugMessage($"Copying executable from {currentExePath} to {TargetExePath}.");
-                Console.WriteLine("2. Copying executable to the persistent install location...");
-
-                try
-                {
-                    File.Copy(currentExePath, TargetExePath, true);
-                }
-                catch (Exception copyEx)
-                {
-                    LogDebugMessage($"Error during file copy: {copyEx.Message}");
-                    Console.WriteLine($"    ! WARNING: Failed to copy executable: {copyEx.Message}");
-                    Console.WriteLine("    ! The shell may not launch correctly if the current path is removed.");
-                }
+                MessageBox.Show(
+                    $"The program will now copy the executable to the install folder: {InstallFolderPath}.",
+                    $"{AppName} Install Copy Required",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                
+                // File.Copy logic is safer now that currentExePath is guaranteed to be correct.
+                File.Copy(currentExePath, TargetExePath, true);
             }
-            else
-            {
-                Console.WriteLine("2. Verifying current executable path.");
-            }
-
-            Thread.Sleep(500);
+    
             LogDebugMessage($"Writing Readme to {ReadmePath}.");
             Console.WriteLine($"3. Writing Readme file to: {ReadmePath}");
             File.WriteAllText(ReadmePath, ReadmeFileText);
-
-            Thread.Sleep(500);
+    
             LogDebugMessage("Setting registry Shell value.");
             Console.WriteLine("4. Setting Windows registry key...");
             SetUserShellRegistryValue(requiredShellValue);
-
-            Thread.Sleep(500);
-            Console.WriteLine("\n--- Installation Successful ---");
-            Console.WriteLine($"{AppName} is successfully installed as your shell.");
-            Console.WriteLine("The new shell will take effect on your next login.");
-            Console.WriteLine($"\nReadme file created at: {ReadmePath}");
-
-            Console.Write($"Would you like to view the readme now? (Press y, or any other key to exit): ");
-
-            char readmeInput = Console.ReadKey(true).KeyChar;
-
-            if (char.ToLower(readmeInput) == 'y')
+    
+            LogDebugMessage("Installation successful.");
+            DialogResult viewReadme = MessageBox.Show(
+                $"{AppName} installation successful! The new shell will take effect on your next login. \n\n" +
+                $"Readme file created at: {ReadmePath}\n\n" +
+                "Would you like to view the Readme file now?",
+                $"{AppName} Installation Complete",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information
+            );
+    
+            if (viewReadme == DialogResult.Yes)
             {
                 // Show Readme inline
                 Console.Clear();
