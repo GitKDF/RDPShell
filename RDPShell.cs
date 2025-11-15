@@ -13,6 +13,9 @@ using System.Linq;
 
 public class RDPShell
 {
+    // DEBUG CONTROL FLAG: Set to 'true' to enable all file logging across the application.
+    private const bool DEBUG_ENABLED = false;
+    
     // --- NATIVE IMPORTS (P/Invoke) ---
 
     // User32 imports for Keyboard state and window manipulation
@@ -82,9 +85,6 @@ public class RDPShell
     private const string ShellFlag = "-shell";
     // FLAG: Used only to trigger the UAC prompt
     private const string AdminCheckFlag = "-admincheck";
-
-    // DEBUG CONTROL FLAG: Set to 'true' to enable all file logging across the application.
-    private const bool DEBUG_ENABLED = true;
 
     // Per-user registry path for the shell override
     private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
