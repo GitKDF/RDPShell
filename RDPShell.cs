@@ -261,6 +261,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
 
     // --- MAIN ENTRY POINT ---
+    [STAThread] // CRITICAL FIX: Ensures the main thread runs in STA model for UAC/shell compatibility
     public static void Main(string[] args)
     {
         try
@@ -563,8 +564,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
         {
             LogDebugMessage("UAC Check: Starting Admin credential check attempt.");
             // Add a short delay before launching the elevated process.
-            LogDebugMessage("UAC Check: Delaying 1000ms to stabilize environment before launching UAC check.");
-            Thread.Sleep(1000);
+            //LogDebugMessage("UAC Check: Delaying 1000ms to stabilize environment before launching UAC check.");
+            //Thread.Sleep(1000);
             
             LogDebugMessage($"UAC Check: Launching process with verb 'runas': {TargetExePath} {AdminCheckFlag}");
 
