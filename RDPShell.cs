@@ -505,7 +505,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             // Check only for the specific blocking title
             if (windowTitle.ToString() == RDPDisconnectionDialogTitle)
             {
-                LogDebugMessage($"[Enum] Found MATCHING blocking RDP window: Title='{title}'. INITIATING LOGOFF.");
+                LogDebugMessage($"[Enum] Found MATCHING blocking RDP window: Title='{windowTitle}'. INITIATING LOGOFF.");
 
                 // Force logoff immediately.
                 // This will end both the RDP process and the RDPShell process (triggering the WaitForExit in RunAsShell).
