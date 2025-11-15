@@ -21,7 +21,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Create .NET Console Project (Targeting Windows)
+      - name: Create .NET Console Project (Targeting Windows GUI Subsystem)
         run: |
           # 1. Use --framework net8.0 to suppress CA1416 warnings
           # 2. Creates RDPShell.csproj in the current directory
@@ -30,11 +30,12 @@ jobs:
           # 3. Remove the default Program.cs file (since RDPShell.cs contains the Main method)
           Remove-Item Program.cs
 
-          # 4. CRITICAL FIX: Replace the TargetFramework in RDPShell.csproj
-          # This explicitly sets the TFM to net8.0-windows to suppress CA1416 warnings.
-          (Get-Content RDPShell.csproj) -replace '<TargetFramework>net8.0</TargetFramework>','<TargetFramework>net8.0-windows</TargetFramework>' |
-            Set-Content RDPShell.csproj
-            
+          # 4. CRITICAL: Replace the TargetFramework and inject the WindowsSubsystem property.
+          # We use a regex match ('<TargetFramework>.*</TargetFramework>') to find the line regardless
+          # of the default version number and force the correct 'net8.0-windows' value.
+          (Get-Content RDPShell.csproj) -replace '<TargetFramework>.*</TargetFramework>','<TargetFramework>net8.0-windows</TargetFramework><WindowsSubsystem>Windows</WindowsSubsystem>' |
+          Set-Content RDPShell.csproj
+          
       - name: Add Required Dependencies
         run: |
           # Adds the package needed for SystemEvents/Registry access
