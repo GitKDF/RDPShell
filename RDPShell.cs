@@ -83,8 +83,8 @@ public class RDPShell
     // FLAG: Used only to trigger the UAC prompt
     private const string AdminCheckFlag = "-admincheck";
 
-    // DEBUG CONTROL FLAG: Set to 'false' to disable all file logging across the application.
-    private const bool DEBUG_ENABLED = false;
+    // DEBUG CONTROL FLAG: Set to 'true' to enable all file logging across the application.
+    private const bool DEBUG_ENABLED = true;
 
     // Per-user registry path for the shell override
     private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
@@ -561,32 +561,38 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
         try
         {
-            // When running as a shell, the system may need time to stabilize
-            // input and windowing after logon before reliably launching a secure-desktop UAC prompt.
-            LogDebugMessage("Delaying 1000ms to stabilize environment before launching UAC check.");
+            LogDebugMessage("UAC Check: Starting Admin credential check attempt.");
+            // Add a short delay before launching the elevated process.
+            LogDebugMessage("UAC Check: Delaying 1000ms to stabilize environment before launching UAC check.");
             Thread.Sleep(1000);
             
+            LogDebugMessage($"UAC Check: Launching process with verb 'runas': {TargetExePath} {AdminCheckFlag}");
+
             // Start the process, which will trigger the UAC prompt
             Process? tempProcess = Process.Start(psi);
 
             if (tempProcess != null)
             {
+                LogDebugMessage($"UAC Check: Process started (PID: {tempProcess.Id}). Waiting for exit...");
                 // Wait for the tiny sub-process to exit. If UAC is accepted, it exits immediately.
-                // If UAC is canceled, a Win32Exception (1223) is thrown, which we catch below.
                 tempProcess.WaitForExit();
+                LogDebugMessage($"UAC Check: Process exited. Exit Code: {tempProcess.ExitCode}");
                 tempProcess.Dispose();
             }
             // If we reach here, the process launched and exited successfully (UAC accepted).
+            LogDebugMessage("UAC Check: SUCCESS path (UAC likely accepted). Returning true.");
             return true;
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
             // Error code 1223 means "The operation was canceled by the user." (UAC declined).
+            LogDebugMessage($"UAC Check: CANCELED path (Win32Exception 1223). UAC was likely declined by the user. Returning false.");
             return false;
         }
         catch (Exception ex)
         {
             // Use native message box for visibility in shell context
+            LogDebugMessage($"UAC Check: UNEXPECTED ERROR path: {ex.Message} (Error Code: {((ex is Win32Exception w32) ? w32.NativeErrorCode.ToString() : "N/A")}). Returning false.");
             ShowMessageBox(
                 $"Unexpected error during credential check: {ex.Message}",
                 AppName,
