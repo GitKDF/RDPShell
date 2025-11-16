@@ -713,6 +713,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             // --- SHELL IS INSTALLED ---
             LogDebugMessage($"Installation detected. Current Shell Value: {currentShellValue}");
 
+            Console.Clear();
             Console.WriteLine($"========================================================================");
             Console.WriteLine($" {AppName} Shell Detected");
             Console.WriteLine($"========================================================================");
@@ -735,6 +736,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 Console.Clear();
                 Console.Write("Are you sure you wish to UNINSTALL RDPShell? (Press y to confirm, or any other key to cancel): ");
                 char confirm = char.ToLower(Console.ReadKey(true).KeyChar);
+                Console.WriteLine(); // Ensure a newline after confirmation read
 
                 if (confirm == 'y')
                 {
@@ -742,14 +744,16 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
                 else
                 {
-                    Console.WriteLine("\nUninstallation canceled. Press any key to exit.");
+                    Console.WriteLine("Uninstallation canceled. Press any key to exit.");
                     Console.ReadKey(true);
+                    Console.WriteLine(); // Ensure prompt returns on a new line
                 }
             }
             else
             {
                 Console.WriteLine("Canceled. Press any key to exit.");
                 Console.ReadKey(true);
+                Console.WriteLine(); // Ensure prompt returns on a new line
             }
             return;
         }
@@ -767,6 +771,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         Console.Write($"Would you like to INSTALL {AppName} as your default shell? (Press y to confirm, or any other key to exit): ");
 
         char installInput = Console.ReadKey(true).KeyChar;
+        Console.WriteLine(); // ADDED: Ensure a newline after key press
 
         if (char.ToLower(installInput) == 'y')
         {
@@ -774,8 +779,9 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         else
         {
-            Console.WriteLine("\nInstallation canceled. Press any key to exit.");
+            Console.WriteLine("Installation canceled. Press any key to exit.");
             Console.ReadKey(true);
+            Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
         }
     }
 
@@ -822,6 +828,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                     Console.WriteLine("\nInstallation canceled.");
                     Console.WriteLine("\nPress any key to exit.");
                     Console.ReadKey(true);
+                    Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
                     return; // *** ABORT INSTALLATION ***
                 }
                 
@@ -849,6 +856,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                     Console.WriteLine("Installation canceled.");
                     Console.WriteLine("\nPress any key to exit.");
                     Console.ReadKey(true);
+                    Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
                     return; // *** ABORT INSTALLATION HERE ***
                 }
             }
@@ -877,6 +885,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.Write("Would you like to disable \"Task Manager\" on the Ctrl+Alt+Del screen?\n(Press y to confirm, or any other key to keep enabled): ");
 
             char suppressInput = Console.ReadKey(true).KeyChar;
+            Console.WriteLine(); // ADDED: Ensure a newline after key press
 
             if (char.ToLower(suppressInput) == 'y')
             {
@@ -885,22 +894,22 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
                 if (result == ExitCodeSuccess)
                 {
-                    Console.WriteLine("\nTask Manager suppressed. It will not be visible on the Ctrl+Alt+Del screen.");
+                    Console.WriteLine("Task Manager suppressed. It will not be visible on the Ctrl+Alt+Del screen.");
                 }
                 else if (result == ExitCodePermissionDenied)
                 {
-                    Console.WriteLine("\n! WARNING: FAILED to suppress Task Manager. The required administrator credentials were not provided or were denied.");
+                    Console.WriteLine("! WARNING: FAILED to suppress Task Manager. The required administrator credentials were not provided or were denied.");
                     Console.WriteLine("Task Manager will remain enabled. You can rerun RDPShell to attempt changing setting again.");
                 }
                 else // ExitCodeFailure
                 {
-                     Console.WriteLine("\n! ERROR: FAILED to suppress Task Manager. An unexpected internal error occurred.");
+                     Console.WriteLine("! ERROR: FAILED to suppress Task Manager. An unexpected internal error occurred.");
                     Console.WriteLine("Task Manager will remain enabled. You can rerun RDPShell to attempt changing setting again.");
                 }
             }
             else
             {
-                Console.WriteLine("\nTask Manager will remain enabled.");
+                Console.WriteLine("Task Manager will remain enabled.");
             }
             
             Console.WriteLine($"\nReadme file created at: {ReadmePath}");
@@ -908,6 +917,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.Write($"Would you like to view the readme now? (Press y, or any other key to exit): ");
 
             char readmeInput = Console.ReadKey(true).KeyChar;
+            Console.WriteLine(); // ADDED: Ensure a newline after key press
 
             if (char.ToLower(readmeInput) == 'y')
             {
@@ -916,6 +926,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 Console.WriteLine(ReadmeFileText);
                 Console.WriteLine("\nPress any key to exit.");
                 Console.ReadKey(true);
+                Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
             }
             
             LogDebugMessage("Installation successful. Console displayed Readme.");
@@ -927,6 +938,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.WriteLine($"ERROR: {ex.Message}");
             Console.WriteLine("\nPress any key to exit.");
             Console.ReadKey(true);
+            Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
         }
     }
 
@@ -944,7 +956,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 Console.Write("Would you like to RESTORE that functionality? (Press y to restore, or any other key to keep it disabled): ");
 
                 char restoreInput = char.ToLower(Console.ReadKey(true).KeyChar);
-                Console.WriteLine();
+                Console.WriteLine(); // ADDED: Ensure a newline after key press
 
                 if (restoreInput == 'y')
                 {
@@ -968,13 +980,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
                         Console.WriteLine("\nPress any key to exit.");
                         Console.ReadKey(true);
+                        Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
                         return; // Exit the function, stopping uninstallation
                     }
-                    Console.WriteLine("\nTask Manager restored. It will be visible on the Ctrl+Alt+Del screen after next login.");
+                    Console.WriteLine("Task Manager restored. It will be visible on the Ctrl+Alt+Del screen after next login.");
                 }
                 else
                 {
-                    Console.WriteLine("\nTask Manager will remain disabled until manually re-enabled.");
+                    Console.WriteLine("Task Manager will remain disabled until manually re-enabled.");
                 }
             }
             // --- END TASK MANAGER CHECK ---
@@ -1038,6 +1051,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.WriteLine("Please log off and log back on for changes to take effect.");
             Console.WriteLine("\nPress any key to exit.");
             Console.ReadKey(true);
+            Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
         }
         catch (Exception ex)
         {
@@ -1046,6 +1060,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.WriteLine($"ERROR: {ex.Message}");
             Console.WriteLine("\nPress any key to exit.");
             Console.ReadKey(true);
+            Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
         }
     }
     
@@ -1261,22 +1276,22 @@ Note: You must log off and log back in for changes to the shell to take effect."
         Console.Write("\n(Press E or R, or any other key to cancel): ");
 
         char input = char.ToLower(Console.ReadKey(true).KeyChar);
-        Console.WriteLine(); 
+        Console.WriteLine(); // ADDED: Ensure a newline after key press
 
         if (input == 'e')
         {
             int result = RestoreTaskManager();
             if (result == ExitCodeSuccess)
             {
-                Console.WriteLine("\nTask Manager restored (enabled) successfully. It will be visible on Ctrl+Alt+Del screen after next login.");
+                Console.WriteLine("Task Manager restored (enabled) successfully. It will be visible on Ctrl+Alt+Del screen after next login.");
             }
             else if (result == ExitCodePermissionDenied)
             {
-                Console.WriteLine("\n! WARNING: RESTORE FAILED. The required administrator credentials were not provided or were denied.");
+                Console.WriteLine("! WARNING: RESTORE FAILED. The required administrator credentials were not provided or were denied.");
             }
             else
             {
-                Console.WriteLine("\n! ERROR: FAILED to restore Task Manager. An unexpected internal error occurred.");
+                Console.WriteLine("! ERROR: FAILED to restore Task Manager. An unexpected internal error occurred.");
             }
         }
         else if (input == 'r')
@@ -1284,24 +1299,25 @@ Note: You must log off and log back in for changes to the shell to take effect."
             int result = SuppressTaskManager();
             if (result == ExitCodeSuccess)
             {
-                Console.WriteLine("\nTask Manager suppression (remove from screen) enabled successfully. It will not be visible on Ctrl+Alt+Del screen after next login.");
+                Console.WriteLine("Task Manager suppression (remove from screen) enabled successfully. It will not be visible on Ctrl+Alt+Del screen after next login.");
             }
             else if (result == ExitCodePermissionDenied)
             {
-                Console.WriteLine("\n! WARNING: SUPPRESSION FAILED. The required administrator credentials were not provided or were denied.");
+                Console.WriteLine("! WARNING: SUPPRESSION FAILED. The required administrator credentials were not provided or were denied.");
             }
             else
             {
-                Console.WriteLine("\n! ERROR: FAILED to suppress Task Manager. An unexpected internal error occurred.");
+                Console.WriteLine("! ERROR: FAILED to suppress Task Manager. An unexpected internal error occurred.");
             }
         }
         else
         {
-            Console.WriteLine("\nChange canceled. Press any key to return to main menu.");
+            Console.WriteLine("Change canceled.");
         }
         
         Console.WriteLine("\nPress any key to exit.");
         Console.ReadKey(true);
+        Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
     }
 
 
