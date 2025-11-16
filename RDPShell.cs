@@ -808,7 +808,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 catch (Exception copyEx)
                 {
                     LogDebugMessage($"FATAL: File copy failed from {currentExePath} to {TargetExePath}\nCanceling install: {copyEx.Message}");
-                    Console.WriteLine($"\n--- Installation FAILED ---\Failed to copy file from {currentExePath} to {TargetExePath}");
+                    Console.WriteLine($"\n--- Installation FAILED ---\nFailed to copy file from {currentExePath} to {TargetExePath}");
                     Console.WriteLine($"FATAL ERROR: {copyEx.Message}");
                     Console.WriteLine("Installation canceled.");
                     Console.WriteLine("\nPress any key to exit.");
