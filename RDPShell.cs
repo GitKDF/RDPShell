@@ -1039,6 +1039,9 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // Returns ExitCodeSuccess, ExitCodePermissionDenied (on UnauthorizedAccessException), or ExitCodeFailure.
     private static int TryModifyTaskMgrRegistryLocally(bool setSuppression)
     {
+        LogDebugMessage($"Attempting local registry modification for Task Manager suppression: {suppress}");
+        
+        // Path: HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Policies\System
         using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath, writable: true))
         {
             if (key != null)
@@ -1093,7 +1096,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
         
         // 2. Fallback to UAC elevation using the appropriate flag if local access failed or was denied
         LogDebugMessage("Local modification failed/denied. Attempting UAC elevation.");
-        return LaunchTaskMgrElevation(TaskMgrSetFlag);
+        string targetSid = GetSessionUserSid();
+        if (string.IsNullOrEmpty(targetSid)) return ExitCodeFailure;
+        
+        return LaunchTaskMgrElevation(TaskMgrSetFlag, targetSid);
     }
 
     // Delete the registry value to enable (restore) Task Manager. Returns status code.
@@ -1111,7 +1117,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
         
         // 2. Fallback to UAC elevation using the appropriate flag if local access failed or was denied
         LogDebugMessage("Local modification failed/denied. Attempting UAC elevation.");
-        return LaunchTaskMgrElevation(TaskMgrRemoveFlag);
+        string targetSid = GetSessionUserSid();
+        if (string.IsNullOrEmpty(targetSid)) return ExitCodeFailure;
+
+        return LaunchTaskMgrElevation(TaskMgrRemoveFlag, targetSid);
     }
     
     // --- ELEVATED REGISTRY MODIFICATION LOGIC ---
