@@ -12,12 +12,19 @@ using System.Text;
 using System.Linq;
 using System.Security.Principal; // Required for SID operations
 using System.Security; // Required for SecurityException
+using System.Collections.Generic; // Required for List<T>
 
 public class RDPShell
 {
-    // DEBUG CONTROL FLAG: Set to 'true' to enable all file logging across the application.
-    private const bool DEBUG_ENABLED = true;
+    // --- STATE MANAGEMENT ---
+    // Global state for debug mode. It replaces the previous DEBUG_ENABLED constant.
+    private static bool IsDebugMode = false;
     
+    // Store the process launched in RDP mode so the event handler can access it
+    private static Process? RDPSubShellProcess;
+    // Used to manage the asynchronous cleanup loop
+    private static CancellationTokenSource? CleanupCts;
+
     // --- NATIVE IMPORTS (P/Invoke) ---
 
     // User32 imports for Keyboard state and window manipulation
@@ -93,6 +100,7 @@ public class RDPShell
     // App constants
     private const string AppName = "RDPShell";
     private const string ShellFlag = "-shell";
+    private const string DebugFlag = "-debug";
     // FLAG: Used only to trigger the UAC prompt
     private const string AdminCheckFlag = "-admincheck";
 
@@ -156,17 +164,11 @@ Simply run the '{AppName}.exe' file from any location (e.g., double-click it).
 The program will detect the installation and prompt you for uninstallation.
 Note: You must log off and log back in for changes to the shell to take effect.";
 
-    // --- STATE MANAGEMENT ---
-    // Store the process launched in RDP mode so the event handler can access it
-    private static Process? RDPSubShellProcess;
-    // Used to manage the asynchronous cleanup loop
-    private static CancellationTokenSource? CleanupCts;
-
     // --- LOGGING HELPER ---
     private static void LogDebugMessage(string message)
     {
         // Check the control flag before writing the message
-        if (!DEBUG_ENABLED) return;
+        if (!IsDebugMode) return; // Now checks IsDebugMode static variable
 
         try
         {
@@ -310,8 +312,28 @@ Note: You must log off and log back in for changes to the shell to take effect."
     {
         try
         {
-            LogDebugMessage($"Application started. Arguments: {string.Join(" ", args)}");
+            List<string> filteredArgs = new List<string>();
+            
+            // 1. Check and strip -debug argument, set global flag
+            // This happens for ALL modes (shell, elevated, installer).
+            foreach (string arg in args)
+            {
+                if (arg.Equals(DebugFlag, StringComparison.OrdinalIgnoreCase))
+                {
+                    IsDebugMode = true;
+                }
+                else
+                {
+                    filteredArgs.Add(arg);
+                }
+            }
+            
+            LogDebugMessage($"Application started. Debug Mode: {IsDebugMode}. Filtered Arguments: {string.Join(" ", filteredArgs)}");
 
+            // Re-assign filtered args for primary mode checks
+            args = filteredArgs.ToArray();
+
+            // 2. Determine Primary Mode based on filtered arguments
             bool isShellMode = args.Length > 0 && args[0].Equals(ShellFlag, StringComparison.OrdinalIgnoreCase);
             bool isAdminCheckMode = args.Length > 0 && args[0].Equals(AdminCheckFlag, StringComparison.OrdinalIgnoreCase);
 
@@ -320,6 +342,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             string taskMgrFlag = string.Empty;
             string targetSid = string.Empty;
 
+            // Check for 2 arguments indicating elevated set task manager mode, as -debug will have been filtered out
             if (args.Length == 2)
             {
                 if (args[0].Equals(TaskMgrSetFlag, StringComparison.OrdinalIgnoreCase) || 
@@ -681,12 +704,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
         LogDebugMessage("Entering CheckAndManageInstallation mode (Console I/O).");
 
         string currentShellValue = GetUserShellRegistryValue();
-        string requiredShellValue = $"\"{TargetExePath}\" {ShellFlag}";
+        
+        // We check for a prefix match, ignoring the optional '-debug' flag.
+        string requiredShellPrefix = $"\"{TargetExePath}\" {ShellFlag}";
 
-        if (currentShellValue.Equals(requiredShellValue, StringComparison.OrdinalIgnoreCase))
+        if (currentShellValue.StartsWith(requiredShellPrefix, StringComparison.OrdinalIgnoreCase))
         {
             // --- SHELL IS INSTALLED ---
-            LogDebugMessage("Installation detected. Prompting for management options.");
+            LogDebugMessage($"Installation detected. Current Shell Value: {currentShellValue}");
 
             Console.WriteLine($"========================================================================");
             Console.WriteLine($" {AppName} Shell Detected");
@@ -731,6 +756,9 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
         // --- SHELL IS NOT INSTALLED ---
         LogDebugMessage("Installation not detected. Prompting for install.");
+        // Prepare the base shell value.
+        string baseShellValue = requiredShellPrefix;
+
 
         Console.WriteLine($"========================================================================");
         Console.WriteLine($" {AppName} Shell Not Installed");
@@ -742,7 +770,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
         if (char.ToLower(installInput) == 'y')
         {
-            InstallShell(requiredShellValue);
+            InstallShell(baseShellValue);
         }
         else
         {
@@ -752,7 +780,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
     }
 
 
-    private static void InstallShell(string requiredShellValue)
+    private static void InstallShell(string baseShellValue)
     {
         try
         {
@@ -766,6 +794,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
             }
 
+            // Determine the FINAL shell value, including the debug flag if active.
+            string finalShellValue = baseShellValue;
+            if (IsDebugMode)
+            {
+                finalShellValue += $" {DebugFlag}";
+                LogDebugMessage($"Adding {DebugFlag} flag to final shell registry value: {finalShellValue}");
+            }
+            
 
             Console.WriteLine("\n--- Installing ---");
 
@@ -827,9 +863,9 @@ Note: You must log off and log back in for changes to the shell to take effect."
             File.WriteAllText(ReadmePath, ReadmeFileText);
 
             Thread.Sleep(500);
-            LogDebugMessage("Setting registry Shell value.");
+            LogDebugMessage($"Setting registry Shell value to: {finalShellValue}");
             Console.WriteLine("4. Setting Windows registry key...");
-            SetUserShellRegistryValue(requiredShellValue);
+            SetUserShellRegistryValue(finalShellValue);
 
             Thread.Sleep(500);
             Console.WriteLine("\n--- Installation Successful ---");
@@ -838,7 +874,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             
             // TASK MANAGER PROMPT
             Console.WriteLine($"\n--- Task Manager Suppression ---");
-            Console.Write("Would you like to disable \"Task Manager\" on the Ctrl+Alt+Del screen? (Press y to confirm, or any other key to keep enabled): ");
+            Console.Write("Would you like to disable \"Task Manager\" on the Ctrl+Alt+Del screen?\n(Press y to confirm, or any other key to keep enabled): ");
 
             char suppressInput = Console.ReadKey(true).KeyChar;
 
@@ -1035,100 +1071,29 @@ Note: You must log off and log back in for changes to the shell to take effect."
         return false;
     }
     
-    // Helper to modify the Task Manager registry key locally (HKCU)
-    // Returns ExitCodeSuccess, ExitCodePermissionDenied (on UnauthorizedAccessException), or ExitCodeFailure.
-    private static int TryModifyTaskMgrRegistryLocally(bool setSuppression)
-    {
-        LogDebugMessage($"Attempting local registry modification for Task Manager suppression: {setSuppression}");
-        
-        // Path: HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Policies\System
-        // We need to wrap the OpenSubKey and subsequent operations in a try-catch to prevent an unhandled exception
-        // if permissions are insufficient, allowing the program to proceed to the elevation fallback.
-        try
-        {
-            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath, writable: true))
-            {
-                if (key != null)
-                {
-                    if (setSuppression)
-                    {
-                        key.SetValue(DisableTaskMgrValueName, DisableTaskMgrValue, RegistryValueKind.DWord);
-                        LogDebugMessage("Task Manager suppressed locally (HKCU) successfully.");
-                    }
-                    else
-                    {
-                        // DeleteValue with throwOnMissingValue=false avoids exceptions if the value doesn't exist
-                        key.DeleteValue(DisableTaskMgrValueName, throwOnMissingValue: false);
-                        LogDebugMessage("Task Manager restored locally (HKCU) successfully.");
-                    }
-                    return ExitCodeSuccess;
-                }
-                else
-                {
-                     // This means the key path itself does not exist and we couldn't create/open it
-                     LogDebugMessage("Failed to open HKCU key for modification (key path does not exist). Assuming need for elevation.");
-                     return ExitCodePermissionDenied;
-                }
-            }
-        }
-        // Catch the specific exceptions that indicate a permission issue and return ExitCodePermissionDenied
-        catch (UnauthorizedAccessException)
-        {
-            LogDebugMessage("UnauthorizedAccessException during local modification. Returning Permission Denied.");
-            return ExitCodePermissionDenied;
-        }
-        catch (SecurityException)
-        {
-            // Catch the SecurityException you observed in the log (Requested registry access is not allowed)
-            LogDebugMessage("SecurityException during local modification. Returning Permission Denied.");
-            return ExitCodePermissionDenied;
-        }
-        catch (Exception ex)
-        {
-            LogDebugMessage($"Unexpected error during local modification attempt: {ex.Message}");
-            return ExitCodeFailure;
-        }
-    }
-
     // Set the registry value to disable (suppress) Task Manager. Returns status code.
     private static int SuppressTaskManager()
     {
-        LogDebugMessage($"Suppressing Task Manager (Setting {DisableTaskMgrValueName}=1).");
+        LogDebugMessage($"Suppressing Task Manager (Setting {DisableTaskMgrValueName}=1). Skipping local modification and attempting UAC elevation immediately.");
         
-        // 1. Try local modification (HKEY_CURRENT_USER)
-        int localResult = TryModifyTaskMgrRegistryLocally(setSuppression: true);
-
-        if (localResult == ExitCodeSuccess)
-        {
-            return ExitCodeSuccess;
-        }
-        
-        // 2. Fallback to UAC elevation using the appropriate flag if local access failed or was denied
-        LogDebugMessage("Local modification failed/denied. Attempting UAC elevation.");
+        // 1. Get the SID of the current (non-elevated) user session
         string targetSid = GetSessionUserSid();
         if (string.IsNullOrEmpty(targetSid)) return ExitCodeFailure;
         
+        // 2. Launch UAC elevation using the appropriate flag
         return LaunchTaskMgrElevation(TaskMgrSetFlag, targetSid);
     }
 
     // Delete the registry value to enable (restore) Task Manager. Returns status code.
     private static int RestoreTaskManager()
     {
-        LogDebugMessage($"Restoring Task Manager (Deleting {DisableTaskMgrValueName}).");
+        LogDebugMessage($"Restoring Task Manager (Deleting {DisableTaskMgrValueName}). Skipping local modification and attempting UAC elevation immediately.");
         
-        // 1. Try local modification (HKEY_CURRENT_USER)
-        int localResult = TryModifyTaskMgrRegistryLocally(setSuppression: false);
-
-        if (localResult == ExitCodeSuccess)
-        {
-            return ExitCodeSuccess;
-        }
-        
-        // 2. Fallback to UAC elevation using the appropriate flag if local access failed or was denied
-        LogDebugMessage("Local modification failed/denied. Attempting UAC elevation.");
+        // 1. Get the SID of the current (non-elevated) user session
         string targetSid = GetSessionUserSid();
         if (string.IsNullOrEmpty(targetSid)) return ExitCodeFailure;
 
+        // 2. Launch UAC elevation using the appropriate flag
         return LaunchTaskMgrElevation(TaskMgrRemoveFlag, targetSid);
     }
     
@@ -1136,9 +1101,9 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // This is run by the elevated process created in LaunchTaskMgrElevation
     private static void RunAsTaskMgrElevated(string taskMgrFlag, string targetSid)
     {
-        // Elevated process is running. It must modify HKEY_USERS\<SID>\...
-        // We can be guaranteed that the user corresponding to the sid passed in is logged in and their hive will be loaded.
-        LogDebugMessage($"[ELEVATED] Starting Task Manager operation for SID: {targetSid}. Flag: {taskMgrFlag}");
+        // Elevated process is running. It must modify HKEY_USERS\<SID>\... or HKEY_CURRENT_USER\...
+        // targetSid is the SID of the user who originally launched the installer.
+        LogDebugMessage($"[ELEVATED] Starting Task Manager operation for original SID: {targetSid}. Flag: {taskMgrFlag}.");
 
         if (string.IsNullOrEmpty(targetSid))
         {
@@ -1147,44 +1112,84 @@ Note: You must log off and log back in for changes to the shell to take effect."
             return;
         }
         
+        // 1. Get the SID of the currently running (elevated) user
+        string currentElevatedSid = GetSessionUserSid();
+
+        // Determine the root key and path based on whether the elevation was done by the logged-in user or another admin
+        RegistryKey rootKey;
+        string policyPath;
+
+        // If the original user's SID matches the elevated user's SID, we can write to HKCU directly.
+        // This handles cases where the original user is already an admin.
+        if (targetSid.Equals(currentElevatedSid, StringComparison.OrdinalIgnoreCase))
+        {
+            rootKey = Registry.CurrentUser;
+            policyPath = TaskMgrPoliciesPath; // e.g., Software\Microsoft\Windows\CurrentVersion\Policies\System
+            LogDebugMessage("[ELEVATED] Target SID matches elevated SID. Modifying HKEY_CURRENT_USER.");
+        }
+        else
+        {
+            // The original user (targetSid) is different from the elevated user.
+            // We must write to HKEY_USERS\<targetSid>\...
+            rootKey = Registry.Users;
+            // Path is HKEY_USERS\<SID>\Software\Microsoft\Windows\CurrentVersion\Policies\System
+            policyPath = $"{targetSid}\\{TaskMgrPoliciesPath}"; 
+            LogDebugMessage($"[ELEVATED] Target SID different from elevated SID. Modifying HKEY_USERS\\{targetSid}.");
+        }
+        
         // Determine if we are setting (Suppressing) or removing (Restoring)
         bool setSuppression = taskMgrFlag.Equals(TaskMgrSetFlag, StringComparison.OrdinalIgnoreCase);
 
-        // Path is HKEY_USERS\<SID>\Software\Microsoft\Windows\CurrentVersion\Policies\System
-        // Registry.Users.OpenSubKey is used to access HKEY_USERS\<SID>
-        string hivePath = $"{targetSid}\\{TaskMgrPoliciesPath}";
-
         try
         {
-            // OpenSubKey on Registry.Users will open the path relative to the SID
-            using (RegistryKey? targetKey = Registry.Users.OpenSubKey(hivePath, writable: true))
+            // Try to open the key
+            using (RegistryKey? targetKey = rootKey.OpenSubKey(policyPath, writable: true))
             {
                 if (targetKey != null)
                 {
                     if (setSuppression)
                     {
                         targetKey.SetValue(DisableTaskMgrValueName, DisableTaskMgrValue, RegistryValueKind.DWord);
-                        LogDebugMessage($"[ELEVATED] Task Manager suppressed for SID {targetSid} successfully.");
+                        LogDebugMessage($"[ELEVATED] Task Manager suppressed successfully.");
                     }
                     else
                     {
                         // DeleteValue with throwOnMissingValue=false avoids exceptions if the value doesn't exist
                         targetKey.DeleteValue(DisableTaskMgrValueName, throwOnMissingValue: false);
-                        LogDebugMessage($"[ELEVATED] Task Manager restored for SID {targetSid} successfully.");
+                        LogDebugMessage($"[ELEVATED] Task Manager restored successfully.");
                     }
+                    targetKey.Close();
                     Environment.Exit(ExitCodeSuccess);
                 }
                 else
                 {
-                    LogDebugMessage($"[ELEVATED] FAILED: Could not open/create target registry key: {hivePath}");
-                    Environment.Exit(ExitCodeFailure); // Internal failure, not UAC denied
+                    // If opening failed, attempt to create the missing key (Policies\System)
+                    using (RegistryKey? newKey = rootKey.CreateSubKey(policyPath, writable: true))
+                    {
+                        if (newKey != null)
+                        {
+                            if (setSuppression)
+                            {
+                                newKey.SetValue(DisableTaskMgrValueName, DisableTaskMgrValue, RegistryValueKind.DWord);
+                                LogDebugMessage($"[ELEVATED] Task Manager suppressed successfully after creating key.");
+                            }
+                            // If restoring and the key didn't exist, we're done (success)
+                            
+                            newKey.Close();
+                            Environment.Exit(ExitCodeSuccess); 
+                            return;
+                        }
+
+                        LogDebugMessage($"[ELEVATED] FAILED: Could not open OR create target registry key: {policyPath}");
+                        Environment.Exit(ExitCodeFailure); // Internal failure
+                    }
                 }
             }
         }
         catch (Exception ex)
         {
             LogDebugMessage($"[ELEVATED] CRITICAL ERROR during registry modification for SID {targetSid}: {ex.Message}");
-            Environment.Exit(ExitCodeFailure); // Internal failure, not UAC denied
+            Environment.Exit(ExitCodeFailure); // Internal failure
         }
     }
 
@@ -1194,8 +1199,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
     private static int LaunchTaskMgrElevation(string flag, string sid)
     {
         // TargetExePath is the path to the persistent executable
-        // Arguments: <Flag> <TargetSID>
-        string arguments = $"{flag} {sid}";
+        // Arguments: <Flag> <TargetSID> [optional -debug]
+        string arguments = $"{flag} {sid}"; 
+        
+        // CHANGED: Conditionally append -debug flag
+        if (IsDebugMode)
+        {
+            arguments += $" {DebugFlag}";
+        }
+        
         ProcessStartInfo psi = new ProcessStartInfo(TargetExePath, arguments); 
         psi.UseShellExecute = true;
         psi.Verb = "runas"; // Requests elevation
