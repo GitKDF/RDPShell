@@ -17,7 +17,7 @@ using System.Collections.Generic; // Required for List<T>
 public class RDPShell
 {
     // --- STATE MANAGEMENT ---
-    // Global state for debug mode. It replaces the previous DEBUG_ENABLED constant.
+    // Global state for debug mode.
     private static bool IsDebugMode = false;
     
     // Store the process launched in RDP mode so the event handler can access it
@@ -36,7 +36,7 @@ public class RDPShell
     private static extern short GetKeyState(int vKey);
 
     // User32 imports for window enumeration
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
@@ -64,9 +64,6 @@ public class RDPShell
 
     // --- NATIVE IMPORTS for Console Allocation ---
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool AttachConsole(int dwProcessId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AllocConsole();
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -76,9 +73,6 @@ public class RDPShell
     private const int VK_LWIN = 0x5B; // Left Windows Key
     private const int VK_RWIN = 0x5C; // Right Windows Key
     private const uint WM_CLOSE = 0x0010;
-
-    // Console constant
-    private const int ATTACH_PARENT_PROCESS = -1;
 
     // Constants for the persistent key check
     private const int INITIAL_DELAY_MS = 500; // Single delay before polling
@@ -263,24 +257,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
         return false;
     }
 
-    // --- CONSOLE MANAGEMENT ---
-    private static void EnsureConsoleAttachedOrAllocated()
+    // --- CONSOLE MANAGEMENT (THE FIX) ---
+    private static void AllocateAndRedirectConsole()
     {
-        // 1. Try to attach to the console of the process that launched us (if any).
-        bool consoleAttached = AttachConsole(ATTACH_PARENT_PROCESS);
+        // 1. Force the allocation of a NEW console window
+        bool consoleAllocated = AllocConsole();
 
-        bool consoleAllocated = false;
-        if (!consoleAttached)
+        if (consoleAllocated)
         {
-            // 2. If attachment failed, allocate a new console for user interaction.
-            consoleAllocated = AllocConsole();
-        }
-
-        if (consoleAttached || consoleAllocated)
-        {
-            // --- CRITICAL FIX: Explicitly redirect streams even if attached ---
-            // This ensures the application takes full control of the console I/O,
-            // preventing the launching shell from interfering with output and input.
+            // --- CRITICAL FIX: Explicitly redirect streams to the newly allocated console ---
             try
             {
                 // Standard Output Stream
@@ -291,11 +276,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 TextReader tr = new StreamReader(Console.OpenStandardInput(), Console.InputEncoding);
                 Console.SetIn(tr);
                 
-                LogDebugMessage($"Console successfully {(consoleAttached ? "attached" : "allocated")} and streams redirected.");
+                LogDebugMessage($"New console successfully allocated and streams redirected.");
             }
             catch (Exception ex)
             {
-                LogDebugMessage($"Failed to redirect console streams: {ex.Message}");
+                LogDebugMessage($"Failed to redirect console streams after allocation: {ex.Message}");
+                // Fallback to message box if console fails
                 ShowMessageBox(
                     "Could not initialize console for installer mode.",
                     AppName,
@@ -305,7 +291,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         else
         {
-            LogDebugMessage("Failed to allocate or attach to any console.");
+            LogDebugMessage("FATAL: Failed to allocate a new console window.");
+            // Fallback to message box if console fails
+            ShowMessageBox(
+                "FATAL ERROR: Could not allocate a console for user interaction. Exiting.",
+                AppName,
+                MB_ICONERROR | MB_OK
+            );
+            Environment.Exit(ExitCodeFailure);
         }
     }
 
@@ -374,11 +367,11 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
             else
             {
-                // Installer/Uninstaller Mode: Requires a console for user interaction
-                EnsureConsoleAttachedOrAllocated();
+                // Installer/Uninstaller Mode: REQUIRES A NEW CONSOLE FOR USER INTERACTION
+                AllocateAndRedirectConsole();
                 CheckAndManageInstallation();
 
-                // Clean up the console if one was allocated (optional, as the process exits)
+                // Clean up the allocated console (optional, as the process exits)
                 FreeConsole();
             }
         }
@@ -705,7 +698,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // --- INSTALLER/UNINSTALLER LOGIC ---
     private static void CheckAndManageInstallation()
     {
-        LogDebugMessage("Entering CheckAndManageInstallation mode (Console I/O).");
+        LogDebugMessage("Entering CheckAndManageInstallation mode (Allocated Console I/O).");
 
         string currentShellValue = GetUserShellRegistryValue();
         
@@ -717,7 +710,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
             // --- SHELL IS INSTALLED ---
             LogDebugMessage($"Installation detected. Current Shell Value: {currentShellValue}");
 
-            Console.Clear();
             Console.WriteLine($"========================================================================");
             Console.WriteLine($" {AppName} Shell Detected");
             Console.WriteLine($"========================================================================");
