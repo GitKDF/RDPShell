@@ -1039,7 +1039,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
     // Returns ExitCodeSuccess, ExitCodePermissionDenied (on UnauthorizedAccessException), or ExitCodeFailure.
     private static int TryModifyTaskMgrRegistryLocally(bool setSuppression)
     {
-        LogDebugMessage($"Attempting local registry modification for Task Manager suppression: {suppress}");
+        LogDebugMessage($"Attempting local registry modification for Task Manager suppression: {setSuppression}");
         
         // Path: HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Policies\System
         using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath, writable: true))
