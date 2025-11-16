@@ -1,4 +1,3 @@
-
 // RDPShell.cs
 using System;
 using System.IO;
@@ -12,6 +11,7 @@ using System.ComponentModel;
 using System.Text;
 using System.Linq;
 using System.Security.Principal; // Required for SID operations
+using System.Security; // Required for SecurityException
 
 public class RDPShell
 {
@@ -1042,11 +1042,13 @@ Note: You must log off and log back in for changes to the shell to take effect."
         LogDebugMessage($"Attempting local registry modification for Task Manager suppression: {setSuppression}");
         
         // Path: HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Policies\System
-        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath, writable: true))
+        // We need to wrap the OpenSubKey and subsequent operations in a try-catch to prevent an unhandled exception
+        // if permissions are insufficient, allowing the program to proceed to the elevation fallback.
+        try
         {
-            if (key != null)
+            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath, writable: true))
             {
-                try
+                if (key != null)
                 {
                     if (setSuppression)
                     {
@@ -1061,23 +1063,30 @@ Note: You must log off and log back in for changes to the shell to take effect."
                     }
                     return ExitCodeSuccess;
                 }
-                catch (UnauthorizedAccessException)
+                else
                 {
-                    LogDebugMessage("UnauthorizedAccessException during local modification.");
-                    return ExitCodePermissionDenied;
-                }
-                catch (Exception ex)
-                {
-                    LogDebugMessage($"Unexpected error during local modification attempt: {ex.Message}");
-                    return ExitCodeFailure;
+                     // This means the key path itself does not exist and we couldn't create/open it
+                     LogDebugMessage("Failed to open HKCU key for modification (key path does not exist). Assuming need for elevation.");
+                     return ExitCodePermissionDenied;
                 }
             }
-            else
-            {
-                 LogDebugMessage("Failed to open HKCU key for modification. Assuming need for elevation.");
-                 // If the key path doesn't exist and we can't create it, assume a permission issue requires elevation.
-                 return ExitCodePermissionDenied;
-            }
+        }
+        // Catch the specific exceptions that indicate a permission issue and return ExitCodePermissionDenied
+        catch (UnauthorizedAccessException)
+        {
+            LogDebugMessage("UnauthorizedAccessException during local modification. Returning Permission Denied.");
+            return ExitCodePermissionDenied;
+        }
+        catch (SecurityException)
+        {
+            // Catch the SecurityException you observed in the log (Requested registry access is not allowed)
+            LogDebugMessage("SecurityException during local modification. Returning Permission Denied.");
+            return ExitCodePermissionDenied;
+        }
+        catch (Exception ex)
+        {
+            LogDebugMessage($"Unexpected error during local modification attempt: {ex.Message}");
+            return ExitCodeFailure;
         }
     }
 
