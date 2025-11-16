@@ -267,17 +267,20 @@ Note: You must log off and log back in for changes to the shell to take effect."
     private static void EnsureConsoleAttachedOrAllocated()
     {
         // 1. Try to attach to the console of the process that launched us (if any).
-        if (AttachConsole(ATTACH_PARENT_PROCESS))
+        bool consoleAttached = AttachConsole(ATTACH_PARENT_PROCESS);
+
+        bool consoleAllocated = false;
+        if (!consoleAttached)
         {
-            LogDebugMessage("Successfully attached to the parent console.");
-            return;
+            // 2. If attachment failed, allocate a new console for user interaction.
+            consoleAllocated = AllocConsole();
         }
 
-        // 2. If step 1 fails (e.g., the app was double-clicked from Explorer),
-        // allocate a new console for user interaction.
-        if (AllocConsole())
+        if (consoleAttached || consoleAllocated)
         {
-            // Re-route the console standard streams to the newly allocated console.
+            // --- CRITICAL FIX: Explicitly redirect streams even if attached ---
+            // This ensures the application takes full control of the console I/O,
+            // preventing the launching shell from interfering with output and input.
             try
             {
                 // Standard Output Stream
@@ -287,7 +290,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 // Standard Input Stream
                 TextReader tr = new StreamReader(Console.OpenStandardInput(), Console.InputEncoding);
                 Console.SetIn(tr);
-                LogDebugMessage("Successfully allocated a new console and redirected streams.");
+                
+                LogDebugMessage($"Console successfully {(consoleAttached ? "attached" : "allocated")} and streams redirected.");
             }
             catch (Exception ex)
             {
