@@ -16,7 +16,7 @@ using System.Security.Principal; // Required for SID operations
 public class RDPShell
 {
     // DEBUG CONTROL FLAG: Set to 'true' to enable all file logging across the application.
-    private const bool DEBUG_ENABLED = false;
+    private const bool DEBUG_ENABLED = true;
     
     // --- NATIVE IMPORTS (P/Invoke) ---
 
