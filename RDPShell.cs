@@ -68,6 +68,15 @@ public class RDPShell
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool FreeConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetStdHandle(int nStdHandle, IntPtr handle);
     
     // --- CONSTANTS AND CONFIGURATION ---
     private const int VK_LWIN = 0x5B; // Left Windows Key
@@ -109,11 +118,11 @@ public class RDPShell
 
     // Per-user registry path for the shell override
     private const string WinlogonRegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
+
     // Task Manager Suppression Registry Constants
     private const string TaskMgrPoliciesPath = @"Software\Microsoft\Windows\CurrentVersion\Policies\System";
     private const string DisableTaskMgrValueName = "DisableTaskMgr";
-    // Value 1 means disabled/suppressed, 0 or deletion means enabled/visible
-    private const int DisableTaskMgrValue = 1; 
+    private const int DisableTaskMgrValue = 1;   // Value 1 means disabled/suppressed, 0 or deletion means enabled/visible
 
     private static readonly string UserProfilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private static readonly string InstallFolderPath = Path.Combine(UserProfilePath, AppName);
@@ -127,6 +136,13 @@ public class RDPShell
     
     // Exact title of the RDP dialog that shows when the RDP session is disconnected.
     private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection";
+
+    // Console Attachment Constants
+
+    private const int ATTACH_PARENT_PROCESS = -1;
+    private const int STD_INPUT_HANDLE  = -10;
+    private const int STD_OUTPUT_HANDLE = -11;
+    private const int STD_ERROR_HANDLE  = -12;
 
     // Multi-line text for the Readme file.
     private static readonly string ReadmeFileText =
@@ -257,50 +273,51 @@ Note: You must log off and log back in for changes to the shell to take effect."
         return false;
     }
 
-    // --- CONSOLE MANAGEMENT (THE FIX) ---
-    private static void AllocateAndRedirectConsole()
+    // --- CONSOLE MANAGEMENT ---
+    public static void EnsureConsoleAttachedOrAllocated()
     {
-        // 1. Force the allocation of a NEW console window
-        bool consoleAllocated = AllocConsole();
+        bool consoleAttached = AttachConsole(ATTACH_PARENT_PROCESS);
+        bool consoleAllocated = false;
 
-        if (consoleAllocated)
+        if (!consoleAttached)
         {
-            // --- CRITICAL FIX: Explicitly redirect streams to the newly allocated console ---
+            consoleAllocated = AllocConsole();
+        }
+
+        if (consoleAttached || consoleAllocated)
+        {
             try
             {
-                // Standard Output Stream
-                TextWriter tw = new StreamWriter(Console.OpenStandardOutput(), Console.OutputEncoding) { AutoFlush = true };
-                Console.SetOut(tw);
+                // --- Rebind native standard handles ---
+                IntPtr hIn  = GetStdHandle(STD_INPUT_HANDLE);
+                IntPtr hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+                IntPtr hErr = GetStdHandle(STD_ERROR_HANDLE);
 
-                // Standard Input Stream
-                TextReader tr = new StreamReader(Console.OpenStandardInput(), Console.InputEncoding);
-                Console.SetIn(tr);
-                
-                LogDebugMessage($"New console successfully allocated and streams redirected.");
+                SetStdHandle(STD_INPUT_HANDLE, hIn);
+                SetStdHandle(STD_OUTPUT_HANDLE, hOut);
+                SetStdHandle(STD_ERROR_HANDLE, hErr);
+
+                // --- Redirect managed streams ---
+                Console.SetIn(new StreamReader(Console.OpenStandardInput()));
+                Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+                Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
+
+                // Optional: clear the console to wipe the shell prompt
+                Console.Clear();
+
+                Console.WriteLine($"Console successfully {(consoleAttached ? "attached" : "allocated")}.");
             }
             catch (Exception ex)
             {
-                LogDebugMessage($"Failed to redirect console streams after allocation: {ex.Message}");
-                // Fallback to message box if console fails
-                ShowMessageBox(
-                    "Could not initialize console for installer mode.",
-                    AppName,
-                    MB_ICONERROR | MB_OK
-                );
+                Console.WriteLine($"Failed to redirect console streams: {ex.Message}");
             }
         }
         else
         {
-            LogDebugMessage("FATAL: Failed to allocate a new console window.");
-            // Fallback to message box if console fails
-            ShowMessageBox(
-                "FATAL ERROR: Could not allocate a console for user interaction. Exiting.",
-                AppName,
-                MB_ICONERROR | MB_OK
-            );
-            Environment.Exit(ExitCodeFailure);
+            Console.WriteLine("Failed to allocate or attach to any console.");
         }
     }
+
 
 
     // --- MAIN ENTRY POINT ---
@@ -367,8 +384,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
             else
             {
-                // Installer/Uninstaller Mode: REQUIRES A NEW CONSOLE FOR USER INTERACTION
-                AllocateAndRedirectConsole();
+                // Installer/Uninstaller Mode: REQUIRES A CONSOLE FOR USER INTERACTION
+                EnsureConsoleAttachedOrAllocated();
                 CheckAndManageInstallation();
 
                 // Clean up the allocated console (optional, as the process exits)
