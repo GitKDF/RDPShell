@@ -10,12 +10,21 @@ using System.Runtime.InteropServices;
 using System.ComponentModel;
 using System.Text;
 using System.Linq;
+using System.Security.Principal; // Required for SID operations
+using System.Security; // Required for SecurityException
+using System.Collections.Generic; // Required for List<T>
 
 public class RDPShell
 {
-    // DEBUG CONTROL FLAG: Set to 'true' to enable all file logging across the application.
-    private const bool DEBUG_ENABLED = false;
+    // --- STATE MANAGEMENT ---
+    // Global state for debug mode.
+    private static bool IsDebugMode = false;
     
+    // Store the process launched in RDP mode so the event handler can access it
+    private static Process? RDPSubShellProcess;
+    // Used to manage the asynchronous cleanup loop
+    private static CancellationTokenSource? CleanupCts;
+
     // --- NATIVE IMPORTS (P/Invoke) ---
 
     // User32 imports for Keyboard state and window manipulation
@@ -27,7 +36,7 @@ public class RDPShell
     private static extern short GetKeyState(int vKey);
 
     // User32 imports for window enumeration
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
@@ -44,34 +53,36 @@ public class RDPShell
     // P/Invoke for native Windows MessageBox API (replaces System.Windows.Forms.MessageBox)
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern int MessageBox(IntPtr hWnd, string lpText, string lpCaption, uint uType);
+    
+    // P/Invoke for forced logoff
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ExitWindowsEx(uint uFlags, uint dwReason);
 
     // Delegate for the EnumWindows callback
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     // --- NATIVE IMPORTS for Console Allocation ---
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool AttachConsole(int dwProcessId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AllocConsole();
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool FreeConsole();
-
-
+    
     // --- CONSTANTS AND CONFIGURATION ---
     private const int VK_LWIN = 0x5B; // Left Windows Key
     private const int VK_RWIN = 0x5C; // Right Windows Key
     private const uint WM_CLOSE = 0x0010;
-
-    // Console constant
-    private const int ATTACH_PARENT_PROCESS = -1;
 
     // Constants for the persistent key check
     private const int INITIAL_DELAY_MS = 500; // Single delay before polling
     private const short KEY_DOWN_BIT = unchecked((short)0x8000);
     private const short KEY_PRESSED_BIT = 0x0001;
     private const short KEY_CHECK_MASK = KEY_DOWN_BIT | KEY_PRESSED_BIT;
+    
+    // ExitWindowsEx flags
+    private const uint EWX_LOGOFF = 0x00000000;
+    private const uint EWX_FORCE = 0x00000004;
 
     // MessageBox constants
     private const uint MB_OK = 0x00000000;
@@ -79,15 +90,31 @@ public class RDPShell
     private const uint MB_ICONERROR = 0x00000010;
     private const uint MB_ICONWARNING = 0x00000030;
     private const uint MB_ICONINFORMATION = 0x00000040;
-
+    
     // App constants
     private const string AppName = "RDPShell";
     private const string ShellFlag = "-shell";
+    private const string DebugFlag = "-debug";
     // FLAG: Used only to trigger the UAC prompt
     private const string AdminCheckFlag = "-admincheck";
 
+    // Task Manager Elevation Flags
+    private const string TaskMgrSetFlag = "-settaskmgr";
+    private const string TaskMgrRemoveFlag = "-removetaskmgr";
+    
+    // Exit Codes for Elevated Operations
+    private const int ExitCodeSuccess = 0;
+    private const int ExitCodeFailure = 1;
+    private const int ExitCodePermissionDenied = 2; // Used when UAC is canceled
+
     // Per-user registry path for the shell override
-    private const string RegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
+    private const string WinlogonRegistryKeyPath = @"Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
+    // Task Manager Suppression Registry Constants
+    private const string TaskMgrPoliciesPath = @"Software\Microsoft\Windows\CurrentVersion\Policies\System";
+    private const string DisableTaskMgrValueName = "DisableTaskMgr";
+    // Value 1 means disabled/suppressed, 0 or deletion means enabled/visible
+    private const int DisableTaskMgrValue = 1; 
+
     private static readonly string UserProfilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private static readonly string InstallFolderPath = Path.Combine(UserProfilePath, AppName);
 
@@ -97,9 +124,9 @@ public class RDPShell
     private static readonly string TargetExePath = Path.Combine(InstallFolderPath, AppName + ".exe");
     private static readonly string ReadmePath = Path.Combine(InstallFolderPath, "readme.txt");
     private const string DefaultShell = "explorer.exe";
-    // Exact title of the RDP dialog that often blocks logoff when disconnected/locked.
+    
+    // Exact title of the RDP dialog that shows when the RDP session is disconnected.
     private const string RDPDisconnectionDialogTitle = "Remote Desktop Connection";
-
 
     // Multi-line text for the Readme file.
     private static readonly string ReadmeFileText =
@@ -131,17 +158,11 @@ Simply run the '{AppName}.exe' file from any location (e.g., double-click it).
 The program will detect the installation and prompt you for uninstallation.
 Note: You must log off and log back in for changes to the shell to take effect.";
 
-    // --- STATE MANAGEMENT ---
-    // Store the process launched in RDP mode so the event handler can access it
-    private static Process? RDPSubShellProcess;
-    // Used to manage the asynchronous cleanup loop
-    private static CancellationTokenSource? CleanupCts;
-
     // --- LOGGING HELPER ---
     private static void LogDebugMessage(string message)
     {
         // Check the control flag before writing the message
-        if (!DEBUG_ENABLED) return;
+        if (!IsDebugMode) return; // Now checks IsDebugMode static variable
 
         try
         {
@@ -164,38 +185,58 @@ Note: You must log off and log back in for changes to the shell to take effect."
     }
 
     // --- SHUTDOWN HELPER ---
-    // Initiates logoff without causing a console window flash by setting ProcessStartInfo properties.
+    // Initiates logoff using ExitWindowsEx with the EWX_FORCE flag.
     private static void InitiateLogoff()
     {
-        LogDebugMessage("Starting silent logoff (shutdown.exe /l /f).");
+        LogDebugMessage("Starting logoff (ExitWindowsEx EWX_LOGOFF | EWX_FORCE).");
         try
         {
-            ProcessStartInfo psi = new ProcessStartInfo
+            // Log off and force all open applications to close.
+            if (!ExitWindowsEx(EWX_LOGOFF | EWX_FORCE, 0))
             {
-                FileName = "shutdown.exe",
-                Arguments = "/l /f",
-                // CRITICAL: Prevent console window from appearing
-                CreateNoWindow = true, 
-                // CRITICAL: Required for CreateNoWindow=true to work reliably on console executables
-                UseShellExecute = false 
-            };
-            Process.Start(psi);
+                // This is a safety check; ExitWindowsEx rarely fails if the user has rights.
+                LogDebugMessage($"ERROR: ExitWindowsEx failed with error code: {Marshal.GetLastWin32Error()}");
+            }
         }
         catch (Exception ex)
         {
-            LogDebugMessage($"ERROR: Failed to initiate logoff silently: {ex.Message}. Falling back to non-silent.");
-            // Fallback to the non-silent method if the silent one fails (still better than failing to logoff)
-            Process.Start("shutdown.exe", "/l /f");
+            LogDebugMessage($"CRITICAL ERROR: Failed to call ExitWindowsEx: {ex.Message}");
+            
+            // Fallback to forced logoff if the initial attempt failed unexpectedly
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "shutdown.exe",
+                    Arguments = "/l /f", // Logoff and Force
+                    CreateNoWindow = true, 
+                    UseShellExecute = false 
+                };
+                Process.Start(psi);
+            }
+            catch (Exception forcedEx)
+            {
+                 LogDebugMessage($"ERROR: Failed to initiate forced logoff using shutdown.exe: {forcedEx.Message}");
+            }
         }
     }
 
     // --- UTILITY FUNCTIONS ---
 
-    private static string GetWindowClassName(IntPtr hWnd)
+    // Helper to get the current user's SID (Used for targeting registry in elevated process)
+    private static string GetSessionUserSid()
     {
-        StringBuilder className = new StringBuilder(256);
-        GetClassName(hWnd, className, className.Capacity);
-        return className.ToString();
+        try
+        {
+            // Get the SID of the user who launched this process (the non-elevated user)
+            System.Security.Principal.SecurityIdentifier sid = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+            return sid.Value;
+        }
+        catch (Exception ex)
+        {
+            LogDebugMessage($"ERROR: Failed to get current user SID: {ex.Message}");
+            return string.Empty;
+        }
     }
 
     private static bool IsWinKeyDown()
@@ -216,21 +257,15 @@ Note: You must log off and log back in for changes to the shell to take effect."
         return false;
     }
 
-    // --- CONSOLE MANAGEMENT ---
-    private static void EnsureConsoleAttachedOrAllocated()
+    // --- CONSOLE MANAGEMENT (THE FIX) ---
+    private static void AllocateAndRedirectConsole()
     {
-        // 1. Try to attach to the console of the process that launched us (if any).
-        if (AttachConsole(ATTACH_PARENT_PROCESS))
-        {
-            LogDebugMessage("Successfully attached to the parent console.");
-            return;
-        }
+        // 1. Force the allocation of a NEW console window
+        bool consoleAllocated = AllocConsole();
 
-        // 2. If step 1 fails (e.g., the app was double-clicked from Explorer),
-        // allocate a new console for user interaction.
-        if (AllocConsole())
+        if (consoleAllocated)
         {
-            // Re-route the console standard streams to the newly allocated console.
+            // --- CRITICAL FIX: Explicitly redirect streams to the newly allocated console ---
             try
             {
                 // Standard Output Stream
@@ -240,12 +275,13 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 // Standard Input Stream
                 TextReader tr = new StreamReader(Console.OpenStandardInput(), Console.InputEncoding);
                 Console.SetIn(tr);
-
-                LogDebugMessage("Successfully allocated a new console and redirected streams.");
+                
+                LogDebugMessage($"New console successfully allocated and streams redirected.");
             }
             catch (Exception ex)
             {
-                LogDebugMessage($"Failed to redirect console streams: {ex.Message}");
+                LogDebugMessage($"Failed to redirect console streams after allocation: {ex.Message}");
+                // Fallback to message box if console fails
                 ShowMessageBox(
                     "Could not initialize console for installer mode.",
                     AppName,
@@ -255,21 +291,65 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         else
         {
-            LogDebugMessage("Failed to allocate or attach to any console.");
+            LogDebugMessage("FATAL: Failed to allocate a new console window.");
+            // Fallback to message box if console fails
+            ShowMessageBox(
+                "FATAL ERROR: Could not allocate a console for user interaction. Exiting.",
+                AppName,
+                MB_ICONERROR | MB_OK
+            );
+            Environment.Exit(ExitCodeFailure);
         }
     }
 
 
     // --- MAIN ENTRY POINT ---
-    [STAThread] // CRITICAL FIX: Ensures the main thread runs in STA model for UAC/shell compatibility
+    [STAThread] 
     public static void Main(string[] args)
     {
         try
         {
-            LogDebugMessage($"Application started. Arguments: {string.Join(" ", args)}");
+            List<string> filteredArgs = new List<string>();
+            
+            // 1. Check and strip -debug argument, set global flag
+            // This happens for ALL modes (shell, elevated, installer).
+            foreach (string arg in args)
+            {
+                if (arg.Equals(DebugFlag, StringComparison.OrdinalIgnoreCase))
+                {
+                    IsDebugMode = true;
+                }
+                else
+                {
+                    filteredArgs.Add(arg);
+                }
+            }
+            
+            LogDebugMessage($"Application started. Debug Mode: {IsDebugMode}. Filtered Arguments: {string.Join(" ", filteredArgs)}");
 
+            // Re-assign filtered args for primary mode checks
+            args = filteredArgs.ToArray();
+
+            // 2. Determine Primary Mode based on filtered arguments
             bool isShellMode = args.Length > 0 && args[0].Equals(ShellFlag, StringComparison.OrdinalIgnoreCase);
             bool isAdminCheckMode = args.Length > 0 && args[0].Equals(AdminCheckFlag, StringComparison.OrdinalIgnoreCase);
+
+            // Elevated TaskMgr Mode Check: Expects 2 arguments: Flag and Target SID
+            bool isTaskMgrElevatedMode = false;
+            string taskMgrFlag = string.Empty;
+            string targetSid = string.Empty;
+
+            // Check for 2 arguments indicating elevated set task manager mode, as -debug will have been filtered out
+            if (args.Length == 2)
+            {
+                if (args[0].Equals(TaskMgrSetFlag, StringComparison.OrdinalIgnoreCase) || 
+                    args[0].Equals(TaskMgrRemoveFlag, StringComparison.OrdinalIgnoreCase))
+                {
+                    taskMgrFlag = args[0];
+                    targetSid = args[1]; // The SID of the user who launched the installer
+                    isTaskMgrElevatedMode = true;
+                }
+            }
 
             if (isShellMode)
             {
@@ -280,14 +360,18 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 LogDebugMessage("AdminCheck mode triggered. Exiting successfully.");
                 return;
             }
+            else if (isTaskMgrElevatedMode)
+            {
+                // Elevated operation requested. This process is running as Administrator.
+                RunAsTaskMgrElevated(taskMgrFlag, targetSid);
+            }
             else
             {
-                // Installer/Uninstaller Mode: Requires a console for user interaction
-                EnsureConsoleAttachedOrAllocated();
-
+                // Installer/Uninstaller Mode: REQUIRES A NEW CONSOLE FOR USER INTERACTION
+                AllocateAndRedirectConsole();
                 CheckAndManageInstallation();
 
-                // Clean up the console if one was allocated (optional, as the process exits)
+                // Clean up the allocated console (optional, as the process exits)
                 FreeConsole();
             }
         }
@@ -302,7 +386,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 AppName,
                 MB_ICONERROR | MB_OK
             );
-            Environment.Exit(1);
+            Environment.Exit(ExitCodeFailure);
         }
     }
 
@@ -320,16 +404,18 @@ Note: You must log off and log back in for changes to the shell to take effect."
             {
                 LogDebugMessage("Windows key detected. Attempting admin credential check.");
 
+                // Attempt to elevate the process just to confirm UAC acceptance
                 if (AttemptAdminCredentialCheck())
                 {
                     LogDebugMessage($"Admin check passed. Launching {DefaultShell}.");
+                    // Launch Explorer directly without elevation
                     subShellProcess = Process.Start(DefaultShell);
                 }
                 else
                 {
                     LogDebugMessage("Admin check failed or canceled. Logging off.");
                     ShowMessageBox(
-                        "You must have administrative privileges to access the local desktop on this account.",
+                        "You must have or provide administrative privileges to access the local desktop on this account.",
                         AppName,
                         MB_ICONERROR | MB_OK
                     );
@@ -344,13 +430,12 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
                 if (rdpFiles.Length >= 1)
                 {
-                    LogDebugMessage($"Found RDP file(s). Using: {rdpFiles[0]}. Launching mstsc.exe.");
-
                     if (rdpFiles.Length > 1)
                     {
                         LogDebugMessage($"Found multiple RDP files. Using the first one: {Path.GetFileName(rdpFiles[0])}.");
+                    } else {
+                        LogDebugMessage($"Found RDP file. Launching mstsc.exe with: {rdpFiles[0]}.");
                     }
-
                     subShellProcess = LaunchRDP(rdpFiles[0]);
                     rdpMode = true;
                 }
@@ -373,7 +458,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 AppName,
                 MB_ICONERROR | MB_OK
             );
-            // Use silent logoff helper
             InitiateLogoff();
             return;
         }
@@ -421,7 +505,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         // Use silent logoff helper
         InitiateLogoff();
 
-        Environment.Exit(0);
+        Environment.Exit(ExitCodeSuccess);
     }
 
     // --- ASYNCHRONOUS SESSION SWITCH HANDLER ---
@@ -466,6 +550,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             try
             {
                 // Wait 1 second (longer interval since it's only active when locked)
+                // WaitHandle.WaitOne is a blocking wait, which is fine for this background thread.
                 token.WaitHandle.WaitOne(1000);
             }
             catch (OperationCanceledException)
@@ -489,6 +574,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
     {
         try
         {
+            // Use GCHandle for safely passing the process ID to the native C# callback
             GCHandle gch = GCHandle.Alloc(subShellProcessId);
             try
             {
@@ -563,9 +649,6 @@ Note: You must log off and log back in for changes to the shell to take effect."
         try
         {
             LogDebugMessage("UAC Check: Starting Admin credential check attempt.");
-            // Add a short delay before launching the elevated process.
-            //LogDebugMessage("UAC Check: Delaying 1000ms to stabilize environment before launching UAC check.");
-            //Thread.Sleep(1000);
             
             LogDebugMessage($"UAC Check: Launching process with verb 'runas': {TargetExePath} {AdminCheckFlag}");
 
@@ -612,69 +695,115 @@ Note: You must log off and log back in for changes to the shell to take effect."
     }
 
 
-    // --- INSTALLER/UNINSTALLER LOGIC (Converted to Console I/O) ---
+    // --- INSTALLER/UNINSTALLER LOGIC ---
     private static void CheckAndManageInstallation()
     {
-        // NOTE: This function now relies on EnsureConsoleAttachedOrAllocated() being called 
-        // prior to entry, so Console I/O is expected to work.
-        LogDebugMessage("Entering CheckAndManageInstallation mode (Console I/O).");
+        LogDebugMessage("Entering CheckAndManageInstallation mode (Allocated Console I/O).");
 
         string currentShellValue = GetUserShellRegistryValue();
-        string requiredShellValue = $"\"{TargetExePath}\" {ShellFlag}";
+        
+        // We check for a prefix match, ignoring the optional '-debug' flag.
+        string requiredShellPrefix = $"\"{TargetExePath}\" {ShellFlag}";
 
-        if (currentShellValue.Equals(requiredShellValue, StringComparison.OrdinalIgnoreCase))
+        if (currentShellValue.StartsWith(requiredShellPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            LogDebugMessage("Installation detected. Prompting for uninstall.");
+            // --- SHELL IS INSTALLED ---
+            LogDebugMessage($"Installation detected. Current Shell Value: {currentShellValue}");
 
             Console.WriteLine($"========================================================================");
             Console.WriteLine($" {AppName} Shell Detected");
             Console.WriteLine($"========================================================================");
             Console.WriteLine($"The {AppName} shell is currently installed for user {Environment.UserName}.");
-            Console.Write($"Would you like to UNINSTALL {AppName} and revert to the default shell? (Press y, or any other key to exit): ");
+            Console.WriteLine($"What would you like to do?");
+            Console.WriteLine($"(C)hange \"Task Manager\" suppression on Ctrl+Alt+Del screen");
+            Console.WriteLine($"(U)ninstall {AppName} shell and revert to default");
+            Console.Write($"\n(Press C or U, or any other key to exit): ");
 
-            char input = Console.ReadKey(true).KeyChar;
+            char input = char.ToLower(Console.ReadKey(true).KeyChar);
+            Console.WriteLine(input); // Newline after key press
 
-            if (char.ToLower(input) == 'y')
+            if (input == 'c')
             {
-                UninstallShell();
+                Console.Clear();
+                ChangeTaskManagerSuppression();
+            }
+            else if (input == 'u')
+            {
+                Console.Clear();
+                Console.Write("Are you sure you wish to UNINSTALL RDPShell? (Press y to confirm, or any other key to cancel): ");
+                char confirm = char.ToLower(Console.ReadKey(true).KeyChar);
+                Console.WriteLine(confirm); // Ensure a newline after confirmation read
+
+                if (confirm == 'y')
+                {
+                    UninstallShell();
+                }
+                else
+                {
+                    Console.WriteLine("Uninstallation canceled. Press any key to exit.");
+                    Console.ReadKey(true);
+                    Console.WriteLine(); // Ensure prompt returns on a new line
+                }
             }
             else
             {
-                Console.WriteLine("\nUninstallation canceled. Press any key to exit.");
+                Console.WriteLine("Canceled. Press any key to exit.");
                 Console.ReadKey(true);
+                Console.WriteLine(); // Ensure prompt returns on a new line
             }
             return;
         }
 
+        // --- SHELL IS NOT INSTALLED ---
         LogDebugMessage("Installation not detected. Prompting for install.");
+        // Prepare the base shell value.
+        string baseShellValue = requiredShellPrefix;
+
 
         Console.WriteLine($"========================================================================");
         Console.WriteLine($" {AppName} Shell Not Installed");
         Console.WriteLine($"========================================================================");
         Console.WriteLine($"The {AppName} shell is currently NOT installed for user {Environment.UserName}.");
-        Console.Write($"Would you like to INSTALL {AppName} as your default shell? (Press y, or any other key to exit): ");
+        Console.Write($"Would you like to INSTALL {AppName} as your default shell? (Press y to confirm, or any other key to exit): ");
 
         char installInput = Console.ReadKey(true).KeyChar;
+        Console.WriteLine(installInput);
 
         if (char.ToLower(installInput) == 'y')
         {
-            InstallShell(requiredShellValue);
+            InstallShell(baseShellValue);
         }
         else
         {
-            Console.WriteLine("\nInstallation canceled. Press any key to exit.");
+            Console.WriteLine("Installation canceled. Press any key to exit.");
             Console.ReadKey(true);
+            Console.WriteLine();
         }
     }
 
 
-    private static void InstallShell(string requiredShellValue)
+    private static void InstallShell(string baseShellValue)
     {
         try
         {
             LogDebugMessage("Starting installation process.");
+            
+            // Get the path of the running executable. Use MainModule.FileName for single-file executables.
+            string? currentExePath = Process.GetCurrentProcess().MainModule?.FileName;
+            if (string.IsNullOrEmpty(currentExePath))
+            {
+                // Fallback, though should not be needed for a running executable.
+                currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
+            }
 
-            string currentExePath = Path.Combine(AppContext.BaseDirectory, AppName + ".exe");
+            // Determine the FINAL shell value, including the debug flag if active.
+            string finalShellValue = baseShellValue;
+            if (IsDebugMode)
+            {
+                finalShellValue += $" {DebugFlag}";
+                LogDebugMessage($"Adding {DebugFlag} flag to final shell registry value: {finalShellValue}");
+            }
+            
 
             Console.WriteLine("\n--- Installing ---");
 
@@ -682,7 +811,23 @@ Note: You must log off and log back in for changes to the shell to take effect."
             {
                 LogDebugMessage($"Creating install directory: {InstallFolderPath}");
                 Console.WriteLine($"1. Creating install directory: {InstallFolderPath}");
-                Directory.CreateDirectory(InstallFolderPath);
+                // This is a critical check where install must be cancelled on failure
+                try
+                {
+                    Directory.CreateDirectory(InstallFolderPath);
+                }
+                catch (Exception createDirEx)
+                {
+                    LogDebugMessage($"FATAL: Directory creation failed at {InstallFolderPath}\nCanceling install: {createDirEx.Message}");
+                    Console.WriteLine($"\n--- Installation FAILED ---\nFailed to create installlation directory at ({InstallFolderPath})");
+                    Console.WriteLine($"FATAL ERROR: {createDirEx.Message}");
+                    Console.WriteLine("\nInstallation canceled.");
+                    Console.WriteLine("\nPress any key to exit.");
+                    Console.ReadKey(true);
+                    Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
+                    return; // *** ABORT INSTALLATION ***
+                }
+                
             }
             else
             {
@@ -694,16 +839,21 @@ Note: You must log off and log back in for changes to the shell to take effect."
             {
                 LogDebugMessage($"Copying executable from {currentExePath} to {TargetExePath}.");
                 Console.WriteLine("2. Copying executable to the persistent install location...");
-
+                // This is the critical check where install must be cancelled on failure
                 try
                 {
                     File.Copy(currentExePath, TargetExePath, true);
                 }
                 catch (Exception copyEx)
                 {
-                    LogDebugMessage($"Error during file copy: {copyEx.Message}");
-                    Console.WriteLine($"    ! WARNING: Failed to copy executable: {copyEx.Message}");
-                    Console.WriteLine("    ! The shell may not launch correctly if the current path is removed.");
+                    LogDebugMessage($"FATAL: File copy failed from {currentExePath} to {TargetExePath}\nCanceling install: {copyEx.Message}");
+                    Console.WriteLine($"\n--- Installation FAILED ---\nFailed to copy file from {currentExePath} to {TargetExePath}");
+                    Console.WriteLine($"FATAL ERROR: {copyEx.Message}");
+                    Console.WriteLine("Installation canceled.");
+                    Console.WriteLine("\nPress any key to exit.");
+                    Console.ReadKey(true);
+                    Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
+                    return; // *** ABORT INSTALLATION HERE ***
                 }
             }
             else
@@ -717,19 +867,53 @@ Note: You must log off and log back in for changes to the shell to take effect."
             File.WriteAllText(ReadmePath, ReadmeFileText);
 
             Thread.Sleep(500);
-            LogDebugMessage("Setting registry Shell value.");
+            LogDebugMessage($"Setting registry Shell value to: {finalShellValue}");
             Console.WriteLine("4. Setting Windows registry key...");
-            SetUserShellRegistryValue(requiredShellValue);
+            SetUserShellRegistryValue(finalShellValue);
 
             Thread.Sleep(500);
             Console.WriteLine("\n--- Installation Successful ---");
             Console.WriteLine($"{AppName} is successfully installed as your shell.");
             Console.WriteLine("The new shell will take effect on your next login.");
+            
+            // TASK MANAGER PROMPT
+            Console.WriteLine($"\n--- Task Manager Suppression ---");
+            Console.Write("Would you like to disable \"Task Manager\" on the Ctrl+Alt+Del screen?\n(Press y to confirm, or any other key to keep enabled): ");
+
+            char suppressInput = Console.ReadKey(true).KeyChar;
+            Console.WriteLine(suppressInput); // ADDED: Ensure a newline after key press
+
+            if (char.ToLower(suppressInput) == 'y')
+            {
+                // Call the updated method which handles UAC and modification
+                int result = SuppressTaskManager();
+
+                if (result == ExitCodeSuccess)
+                {
+                    Console.WriteLine("Task Manager suppressed. It will not be visible on the Ctrl+Alt+Del screen.");
+                }
+                else if (result == ExitCodePermissionDenied)
+                {
+                    Console.WriteLine("! WARNING: FAILED to suppress Task Manager. The required administrator credentials were not provided or were denied.");
+                    Console.WriteLine("Task Manager will remain enabled. You can rerun RDPShell to attempt changing setting again.");
+                }
+                else // ExitCodeFailure
+                {
+                     Console.WriteLine("! ERROR: FAILED to suppress Task Manager. An unexpected internal error occurred.");
+                    Console.WriteLine("Task Manager will remain enabled. You can rerun RDPShell to attempt changing setting again.");
+                }
+            }
+            else
+            {
+                Console.WriteLine("Task Manager will remain enabled.");
+            }
+            
             Console.WriteLine($"\nReadme file created at: {ReadmePath}");
 
             Console.Write($"Would you like to view the readme now? (Press y, or any other key to exit): ");
 
             char readmeInput = Console.ReadKey(true).KeyChar;
+            Console.WriteLine(readmeInput); // ADDED: Ensure a newline after key press
 
             if (char.ToLower(readmeInput) == 'y')
             {
@@ -738,6 +922,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 Console.WriteLine(ReadmeFileText);
                 Console.WriteLine("\nPress any key to exit.");
                 Console.ReadKey(true);
+                Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
             }
             
             LogDebugMessage("Installation successful. Console displayed Readme.");
@@ -749,6 +934,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.WriteLine($"ERROR: {ex.Message}");
             Console.WriteLine("\nPress any key to exit.");
             Console.ReadKey(true);
+            Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
         }
     }
 
@@ -756,10 +942,56 @@ Note: You must log off and log back in for changes to the shell to take effect."
     {
         try
         {
+            // --- TASK MANAGER RESTORATION CHECK (MUST OCCUR FIRST AND CAN ABORT) ---
+            bool wasTaskMgrSuppressed = IsTaskManagerSuppressed();
+            
+            if (wasTaskMgrSuppressed)
+            {
+                Console.WriteLine($"\n--- Task Manager Restoration ---");
+                Console.WriteLine("Task Manager on the Ctrl+Alt+Del screen is currently disabled.");
+                Console.Write("Would you like to RESTORE that functionality? (Press y to restore, or any other key to keep it disabled): ");
+
+                char restoreInput = char.ToLower(Console.ReadKey(true).KeyChar);
+                Console.WriteLine(restoreInput); // ADDED: Ensure a newline after key press
+
+                if (restoreInput == 'y')
+                {
+                    int result = RestoreTaskManager();
+
+                    if (result != ExitCodeSuccess) // Check for failure (including permission denied)
+                    {
+                        LogDebugMessage($"UNINSTALL CANCELED: Failed to restore Task Manager.");
+                        
+                        // CANCEL THE UNINSTALL
+                        Console.WriteLine("\n\n!! UNINSTALLATION CANCELED !!");
+                        Console.WriteLine("ERROR: Task Manager could not be re-enabled.");
+                        if (result == ExitCodePermissionDenied)
+                        {
+                            Console.WriteLine("You must provide administrator credentials to change the setting.");
+                        }
+                        else
+                        {
+                            Console.WriteLine("An unexpected error occurred during restoration attempt.");
+                        }
+
+                        Console.WriteLine("\nPress any key to exit.");
+                        Console.ReadKey(true);
+                        Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
+                        return; // Exit the function, stopping uninstallation
+                    }
+                    Console.WriteLine("Task Manager restored. It will be visible on the Ctrl+Alt+Del screen after next login.");
+                }
+                else
+                {
+                    Console.WriteLine("Task Manager will remain disabled until manually re-enabled.");
+                }
+            }
+            // --- END TASK MANAGER CHECK ---
+
             LogDebugMessage("Starting uninstallation process.");
             Console.WriteLine("\n--- Uninstalling ---");
 
-            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true))
+            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(WinlogonRegistryKeyPath, true))
             {
                 if (key != null)
                 {
@@ -778,7 +1010,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("2. Could not delete Readme file. ({ReadmePath})");
+                    Console.WriteLine("2. Could not delete Readme file.");
                     LogDebugMessage($"Failed to delete Readme file: {ex.Message}");
                 }
             }
@@ -797,7 +1029,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"3. Could not delete Log file. ({LogFilePath})");
+                    Console.WriteLine("3. Could not delete Log file.");
                     LogDebugMessage($"Failed to delete Log file: {ex.Message}");
                 }
             }
@@ -805,6 +1037,8 @@ Note: You must log off and log back in for changes to the shell to take effect."
             {
                 Console.WriteLine("3. Log file not found.");
             }
+            
+            Console.WriteLine("4. Executable file remains in install directory for potential re-use.");
 
             LogDebugMessage("Uninstallation complete.");
 
@@ -813,6 +1047,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.WriteLine("Please log off and log back on for changes to take effect.");
             Console.WriteLine("\nPress any key to exit.");
             Console.ReadKey(true);
+            Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
         }
         catch (Exception ex)
         {
@@ -821,14 +1056,271 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.WriteLine($"ERROR: {ex.Message}");
             Console.WriteLine("\nPress any key to exit.");
             Console.ReadKey(true);
+            Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
         }
+    }
+    
+    // --- TASK MANAGER REGISTRY HELPERS ---
+
+    // Check if the Task Manager is currently disabled (i.e., DisableTaskMgr is set to 1)
+    private static bool IsTaskManagerSuppressed()
+    {
+        // This check targets the current user's policy setting (HKCU)
+        // Since this is running in the non-elevated installer context, HKCU is correct.
+        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(TaskMgrPoliciesPath))
+        {
+            if (key != null)
+            {
+                // Check if the value exists and is set to 1
+                object? value = key.GetValue(DisableTaskMgrValueName);
+                if (value is int intValue && intValue == DisableTaskMgrValue)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    
+    // Set the registry value to disable (suppress) Task Manager. Returns status code.
+    private static int SuppressTaskManager()
+    {
+        LogDebugMessage($"Suppressing Task Manager (Setting {DisableTaskMgrValueName}=1). Skipping local modification and attempting UAC elevation immediately.");
+        
+        // 1. Get the SID of the current (non-elevated) user session
+        string targetSid = GetSessionUserSid();
+        if (string.IsNullOrEmpty(targetSid)) return ExitCodeFailure;
+        
+        // 2. Launch UAC elevation using the appropriate flag
+        return LaunchTaskMgrElevation(TaskMgrSetFlag, targetSid);
+    }
+
+    // Delete the registry value to enable (restore) Task Manager. Returns status code.
+    private static int RestoreTaskManager()
+    {
+        LogDebugMessage($"Restoring Task Manager (Deleting {DisableTaskMgrValueName}). Skipping local modification and attempting UAC elevation immediately.");
+        
+        // 1. Get the SID of the current (non-elevated) user session
+        string targetSid = GetSessionUserSid();
+        if (string.IsNullOrEmpty(targetSid)) return ExitCodeFailure;
+
+        // 2. Launch UAC elevation using the appropriate flag
+        return LaunchTaskMgrElevation(TaskMgrRemoveFlag, targetSid);
+    }
+    
+    // --- ELEVATED REGISTRY MODIFICATION LOGIC ---
+    // This is run by the elevated process created in LaunchTaskMgrElevation
+    private static void RunAsTaskMgrElevated(string taskMgrFlag, string targetSid)
+    {
+        // Elevated process is running. It must modify HKEY_USERS\<SID>\... or HKEY_CURRENT_USER\...
+        // targetSid is the SID of the user who originally launched the installer.
+        LogDebugMessage($"[ELEVATED] Starting Task Manager operation for original SID: {targetSid}. Flag: {taskMgrFlag}.");
+
+        if (string.IsNullOrEmpty(targetSid))
+        {
+            LogDebugMessage("[ELEVATED] Target SID is empty. Exiting with generic failure.");
+            Environment.Exit(ExitCodeFailure);
+            return;
+        }
+        
+        // 1. Get the SID of the currently running (elevated) user
+        string currentElevatedSid = GetSessionUserSid();
+
+        // Determine the root key and path based on whether the elevation was done by the logged-in user or another admin
+        RegistryKey rootKey;
+        string policyPath;
+
+        // If the original user's SID matches the elevated user's SID, we can write to HKCU directly.
+        // This handles cases where the original user is already an admin.
+        if (targetSid.Equals(currentElevatedSid, StringComparison.OrdinalIgnoreCase))
+        {
+            rootKey = Registry.CurrentUser;
+            policyPath = TaskMgrPoliciesPath; // e.g., Software\Microsoft\Windows\CurrentVersion\Policies\System
+            LogDebugMessage("[ELEVATED] Target SID matches elevated SID. Modifying HKEY_CURRENT_USER.");
+        }
+        else
+        {
+            // The original user (targetSid) is different from the elevated user.
+            // We must write to HKEY_USERS\<targetSid>\...
+            rootKey = Registry.Users;
+            // Path is HKEY_USERS\<SID>\Software\Microsoft\Windows\CurrentVersion\Policies\System
+            policyPath = $"{targetSid}\\{TaskMgrPoliciesPath}"; 
+            LogDebugMessage($"[ELEVATED] Target SID different from elevated SID. Modifying HKEY_USERS\\{targetSid}.");
+        }
+        
+        // Determine if we are setting (Suppressing) or removing (Restoring)
+        bool setSuppression = taskMgrFlag.Equals(TaskMgrSetFlag, StringComparison.OrdinalIgnoreCase);
+
+        try
+        {
+            // Try to open the key
+            using (RegistryKey? targetKey = rootKey.OpenSubKey(policyPath, writable: true))
+            {
+                if (targetKey != null)
+                {
+                    if (setSuppression)
+                    {
+                        targetKey.SetValue(DisableTaskMgrValueName, DisableTaskMgrValue, RegistryValueKind.DWord);
+                        LogDebugMessage($"[ELEVATED] Task Manager suppressed successfully.");
+                    }
+                    else
+                    {
+                        // DeleteValue with throwOnMissingValue=false avoids exceptions if the value doesn't exist
+                        targetKey.DeleteValue(DisableTaskMgrValueName, throwOnMissingValue: false);
+                        LogDebugMessage($"[ELEVATED] Task Manager restored successfully.");
+                    }
+                    targetKey.Close();
+                    Environment.Exit(ExitCodeSuccess);
+                }
+                else
+                {
+                    // If opening failed, attempt to create the missing key (Policies\System)
+                    using (RegistryKey? newKey = rootKey.CreateSubKey(policyPath, writable: true))
+                    {
+                        if (newKey != null)
+                        {
+                            if (setSuppression)
+                            {
+                                newKey.SetValue(DisableTaskMgrValueName, DisableTaskMgrValue, RegistryValueKind.DWord);
+                                LogDebugMessage($"[ELEVATED] Task Manager suppressed successfully after creating key.");
+                            }
+                            // If restoring and the key didn't exist, we're done (success)
+                            
+                            newKey.Close();
+                            Environment.Exit(ExitCodeSuccess); 
+                            return;
+                        }
+
+                        LogDebugMessage($"[ELEVATED] FAILED: Could not open OR create target registry key: {policyPath}");
+                        Environment.Exit(ExitCodeFailure); // Internal failure
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogDebugMessage($"[ELEVATED] CRITICAL ERROR during registry modification for SID {targetSid}: {ex.Message}");
+            Environment.Exit(ExitCodeFailure); // Internal failure
+        }
+    }
+
+
+    // --- TASK MANAGER REGISTRY HELPERS (WITH ELEVATION FALLBACK) ---
+    // Helper to launch the elevated process and check result. Returns the exit code of the elevated process.
+    private static int LaunchTaskMgrElevation(string flag, string sid)
+    {
+        // TargetExePath is the path to the persistent executable
+        // Arguments: <Flag> <TargetSID> [optional -debug]
+        string arguments = $"{flag} {sid}"; 
+        
+        // CHANGED: Conditionally append -debug flag
+        if (IsDebugMode)
+        {
+            arguments += $" {DebugFlag}";
+        }
+        
+        ProcessStartInfo psi = new ProcessStartInfo(TargetExePath, arguments); 
+        psi.UseShellExecute = true;
+        psi.Verb = "runas"; // Requests elevation
+
+        try
+        {
+            LogDebugMessage($"[ELEVATION] Starting process with verb 'runas': {TargetExePath} {arguments}");
+            
+            Process? tempProcess = Process.Start(psi);
+            if (tempProcess == null) return ExitCodeFailure;
+
+            tempProcess.WaitForExit();
+            int exitCode = tempProcess.ExitCode;
+            tempProcess.Dispose();
+
+            LogDebugMessage($"[ELEVATION] Elevated process exited. Exit Code: {exitCode}");
+            
+            // Return the exit code from the elevated process directly
+            return exitCode;
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            // Error code 1223 means "The operation was canceled by the user." (UAC declined).
+            LogDebugMessage("[ELEVATION] UAC was canceled by the user (Win32Exception 1223).");
+            // Map UAC cancellation to the PermissionDenied exit code
+            return ExitCodePermissionDenied;
+        }
+        catch (Exception ex)
+        {
+            LogDebugMessage($"[ELEVATION] UNEXPECTED ERROR during elevation: {ex.Message}");
+            return ExitCodeFailure;
+        }
+    }
+
+    // --- TASK MANAGER INTERACTIVE MANAGEMENT ---
+    private static void ChangeTaskManagerSuppression()
+    {
+        LogDebugMessage("Entering ChangeTaskManagerSuppression mode.");
+        Console.WriteLine($"\n========================================================================");
+        Console.WriteLine($" Task Manager Suppression Management");
+        Console.WriteLine($"========================================================================");
+
+        bool isSuppressed = IsTaskManagerSuppressed();
+        string status = isSuppressed ? "DISABLED (hidden)" : "ENABLED (visible)";
+        Console.WriteLine($"Current Status: Task Manager is currently {status} on Ctrl+Alt+Del screen.");
+        Console.WriteLine("------------------------------------------------------------------------");
+        
+        Console.WriteLine("Options:");
+        Console.WriteLine("(E)nable \"Task Manager\" (restores functionality, deletes registry key)");
+        Console.WriteLine("(R)emove \"Task Manager\" (suppresses functionality, sets registry key)");
+        Console.Write("\n(Press E or R, or any other key to cancel): ");
+
+        char input = char.ToLower(Console.ReadKey(true).KeyChar);
+        Console.WriteLine(input); // ADDED: Ensure a newline after key press
+
+        if (input == 'e')
+        {
+            int result = RestoreTaskManager();
+            if (result == ExitCodeSuccess)
+            {
+                Console.WriteLine("Task Manager restored (enabled) successfully.");
+            }
+            else if (result == ExitCodePermissionDenied)
+            {
+                Console.WriteLine("! WARNING: RESTORE FAILED. The required administrator credentials were not provided or were denied.");
+            }
+            else
+            {
+                Console.WriteLine("! ERROR: FAILED to restore Task Manager. An unexpected internal error occurred.");
+            }
+        }
+        else if (input == 'r')
+        {
+            int result = SuppressTaskManager();
+            if (result == ExitCodeSuccess)
+            {
+                Console.WriteLine("Task Manager suppression (remove from screen) enabled successfully.");
+            }
+            else if (result == ExitCodePermissionDenied)
+            {
+                Console.WriteLine("! WARNING: SUPPRESSION FAILED. The required administrator credentials were not provided or were denied.");
+            }
+            else
+            {
+                Console.WriteLine("! ERROR: FAILED to suppress Task Manager. An unexpected internal error occurred.");
+            }
+        }
+        else
+        {
+            Console.WriteLine("Change canceled.");
+        }
+        
+        Console.WriteLine("\nPress any key to exit.");
+        Console.ReadKey(true);
+        Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
     }
 
 
     // --- REGISTRY HELPERS ---
     private static string GetUserShellRegistryValue()
     {
-        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath))
+        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(WinlogonRegistryKeyPath))
         {
             if (key != null)
             {
@@ -841,10 +1333,10 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
     private static void SetUserShellRegistryValue(string value)
     {
-        RegistryKey? key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath, true);
+        RegistryKey? key = Registry.CurrentUser.OpenSubKey(WinlogonRegistryKeyPath, true);
         if (key == null)
         {
-            key = Registry.CurrentUser.CreateSubKey(RegistryKeyPath, true);
+            key = Registry.CurrentUser.CreateSubKey(WinlogonRegistryKeyPath, true);
         }
 
         if (key != null)
