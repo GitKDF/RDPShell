@@ -720,7 +720,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.Write($"\n(Press C or U, or any other key to exit): ");
 
             char input = char.ToLower(Console.ReadKey(true).KeyChar);
-            Console.WriteLine(); // Newline after key press
+            Console.WriteLine(input); // Newline after key press
 
             if (input == 'c')
             {
@@ -732,7 +732,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 Console.Clear();
                 Console.Write("Are you sure you wish to UNINSTALL RDPShell? (Press y to confirm, or any other key to cancel): ");
                 char confirm = char.ToLower(Console.ReadKey(true).KeyChar);
-                Console.WriteLine(); // Ensure a newline after confirmation read
+                Console.WriteLine(confirm); // Ensure a newline after confirmation read
 
                 if (confirm == 'y')
                 {
@@ -767,7 +767,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         Console.Write($"Would you like to INSTALL {AppName} as your default shell? (Press y to confirm, or any other key to exit): ");
 
         char installInput = Console.ReadKey(true).KeyChar;
-        Console.WriteLine(); // ADDED: Ensure a newline after key press
+        Console.WriteLine(installInput);
 
         if (char.ToLower(installInput) == 'y')
         {
@@ -777,7 +777,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         {
             Console.WriteLine("Installation canceled. Press any key to exit.");
             Console.ReadKey(true);
-            Console.WriteLine(); // ADDED: Ensure prompt returns on a new line
+            Console.WriteLine();
         }
     }
 
@@ -881,7 +881,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.Write("Would you like to disable \"Task Manager\" on the Ctrl+Alt+Del screen?\n(Press y to confirm, or any other key to keep enabled): ");
 
             char suppressInput = Console.ReadKey(true).KeyChar;
-            Console.WriteLine(); // ADDED: Ensure a newline after key press
+            Console.WriteLine(suppressInput); // ADDED: Ensure a newline after key press
 
             if (char.ToLower(suppressInput) == 'y')
             {
@@ -913,7 +913,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             Console.Write($"Would you like to view the readme now? (Press y, or any other key to exit): ");
 
             char readmeInput = Console.ReadKey(true).KeyChar;
-            Console.WriteLine(); // ADDED: Ensure a newline after key press
+            Console.WriteLine(readmeInput); // ADDED: Ensure a newline after key press
 
             if (char.ToLower(readmeInput) == 'y')
             {
@@ -952,7 +952,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 Console.Write("Would you like to RESTORE that functionality? (Press y to restore, or any other key to keep it disabled): ");
 
                 char restoreInput = char.ToLower(Console.ReadKey(true).KeyChar);
-                Console.WriteLine(); // ADDED: Ensure a newline after key press
+                Console.WriteLine(restoreInput); // ADDED: Ensure a newline after key press
 
                 if (restoreInput == 'y')
                 {
@@ -1272,7 +1272,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         Console.Write("\n(Press E or R, or any other key to cancel): ");
 
         char input = char.ToLower(Console.ReadKey(true).KeyChar);
-        Console.WriteLine(); // ADDED: Ensure a newline after key press
+        Console.WriteLine(input); // ADDED: Ensure a newline after key press
 
         if (input == 'e')
         {
