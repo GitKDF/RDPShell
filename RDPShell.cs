@@ -430,41 +430,74 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
                 if (rdpFiles.Length >= 1)
                 {
-                    // Look for RDPShell.bat in the same folder and run it first if present
+                    // Look for RDPShell.ps1 or RDPShell.bat (prefer .ps1)
+                    string ps1File = Path.Combine(InstallFolderPath, "RDPShell.ps1");
                     string batFile = Path.Combine(InstallFolderPath, "RDPShell.bat");
-                    if (File.Exists(batFile))
+                
+                    string preScript = null;
+                    bool isPowerShell = false;
+                
+                    if (File.Exists(ps1File))
                     {
-                        LogDebugMessage("Found RDPShell.bat. Executing pre-launch script...");
+                        preScript = ps1File;
+                        isPowerShell = true;
+                    }
+                    else if (File.Exists(batFile))
+                    {
+                        preScript = batFile;
+                    }
+                
+                    if (preScript != null)
+                    {
+                        LogDebugMessage($"Found pre-launch script: {Path.GetFileName(preScript)}. Executing...");
+                
                         try
                         {
-                            var psi = new ProcessStartInfo
-                            {
-                                FileName = batFile,
-                                WorkingDirectory = InstallFolderPath,
-                                UseShellExecute = false,
-                                CreateNoWindow = true,
-                            };
+                            ProcessStartInfo psi;
                 
-                            using (var batProcess = Process.Start(psi))
+                            if (isPowerShell)
                             {
-                                batProcess.WaitForExit();
-                                if (batProcess.ExitCode != 0)
+                                psi = new ProcessStartInfo
                                 {
-                                    throw new Exception($"RDPShell.bat exited with code {batProcess.ExitCode}.");
+                                    FileName = "powershell.exe",
+                                    Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{preScript}\"",
+                                    WorkingDirectory = InstallFolderPath,
+                                    UseShellExecute = false,
+                                    CreateNoWindow = true,
+                                };
+                            }
+                            else
+                            {
+                                psi = new ProcessStartInfo
+                                {
+                                    FileName = preScript,
+                                    WorkingDirectory = InstallFolderPath,
+                                    UseShellExecute = false,
+                                    CreateNoWindow = true,
+                                };
+                            }
+                
+                            using (var proc = Process.Start(psi))
+                            {
+                                proc.WaitForExit();
+                
+                                if (proc.ExitCode != 0)
+                                {
+                                    throw new Exception($"{Path.GetFileName(preScript)} exited with code {proc.ExitCode}.");
                                 }
-                                LogDebugMessage("RDPShell.bat completed successfully.");
+                
+                                LogDebugMessage($"{Path.GetFileName(preScript)} completed successfully.");
                             }
                         }
                         catch (Exception ex)
                         {
-                            LogDebugMessage($"Error running RDPShell.bat: {ex.Message}");
+                            LogDebugMessage($"Error running {Path.GetFileName(preScript)}: {ex.Message}");
                         }
                     }
                     else
                     {
-                        LogDebugMessage("No RDPShell.bat found. Skipping pre-launch script.");
+                        LogDebugMessage("No RDPShell.ps1 or RDPShell.bat found. Skipping pre-launch script.");
                     }
-
                     
                     if (rdpFiles.Length > 1)
                     {
