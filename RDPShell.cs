@@ -409,11 +409,14 @@ Note: You must log off and log back in for changes to the shell to take effect."
             // 1. Initial Access Check (Admin Desktop vs. RDP)
             if (IsWinKeyDown())
             {
+                // Normal Shell Mode (Win key is pressed)
                 LogDebugMessage("Windows key detected. Attempting admin credential check.");
     
+                // Attempt to elevate the process just to confirm UAC acceptance
                 if (AttemptAdminCredentialCheck())
                 {
                     LogDebugMessage($"Admin check passed. Launching {DefaultShell}.");
+                    // 2a. Launch Explorer directly without elevation
                     subShellProcess = Process.Start(DefaultShell);
                 }
                 else
@@ -424,7 +427,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             }
             else
             {
-                // 2. RDP Mode Setup
+                // RDP Mode Setup (Win Key is not pressed)
                 LogDebugMessage("Windows key not detected. Attempting RDP mode.");
                 string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell*.rdp", SearchOption.TopDirectoryOnly);
     
@@ -433,7 +436,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                     throw new Exception($"No RDP file found in '{InstallFolderPath}' matching 'RDPShell*.rdp'.");
                 }
     
-                // 3. Pre-Launch Script Handling
+                // Pre-Launch Script Handling
                 string ps1File = Path.Combine(InstallFolderPath, "RDPShell.ps1");
                 string batFile = Path.Combine(InstallFolderPath, "RDPShell.bat");
                 string? preScript = File.Exists(ps1File) ? ps1File : (File.Exists(batFile) ? batFile : null);
@@ -473,19 +476,27 @@ Note: You must log off and log back in for changes to the shell to take effect."
     
                         if (scriptProc.ExitCode != 0)
                         {
-                            throw new Exception($"{scriptName} exited with code {scriptProc.ExitCode}. {errorBuilder}");
+                            string displayError = errorBuilder.Length > 500 
+                                ? errorBuilder.ToString().Substring(0, 500) + "..." 
+                                : errorBuilder.ToString();
+                            throw new Exception($"{scriptName} exited with code {scriptProc.ExitCode}. {displayError}");
                         }
                         LogDebugMessage($"{scriptName} completed successfully.");
                     }
                 }
+
+                if (rdpFiles.Length > 1)
+                {
+                    LogDebugMessage($"Found multiple RDP files. Using the first one: {Path.GetFileName(rdpFiles[0])}.");
+                }
     
-                // 4. Launch RDP
+                // 2b. Launch RDP
                 LogDebugMessage($"Launching RDP: {Path.GetFileName(rdpFiles[0])}");
                 subShellProcess = LaunchRDP(rdpFiles[0]);
                 rdpMode = true;
             }
     
-            // 5. Monitor the Active Subshell (Explorer or RDP)
+            // 3. Monitor the Active Subshell (Explorer or RDP)
             if (subShellProcess != null)
             {
                 if (rdpMode)
@@ -509,7 +520,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
         }
         finally
         {
-            // 6. Cleanup & Final Logoff
+            // 4. Cleanup & Final Logoff
             // This block is guaranteed to run, ensuring the user is never stuck.
             LogDebugMessage("Executing final shell cleanup and logoff.");
     
