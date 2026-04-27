@@ -430,6 +430,42 @@ Note: You must log off and log back in for changes to the shell to take effect."
 
                 if (rdpFiles.Length >= 1)
                 {
+                    // Look for RDPShell.bat in the same folder and run it first if present
+                    string batFile = Path.Combine(InstallFolderPath, "RDPShell.bat");
+                    if (File.Exists(batFile))
+                    {
+                        LogDebugMessage("Found RDPShell.bat. Executing pre-launch script...");
+                        try
+                        {
+                            var psi = new ProcessStartInfo
+                            {
+                                FileName = batFile,
+                                WorkingDirectory = InstallFolderPath,
+                                UseShellExecute = false,
+                                CreateNoWindow = true,
+                            };
+                
+                            using (var batProcess = Process.Start(psi))
+                            {
+                                batProcess.WaitForExit();
+                                if (batProcess.ExitCode != 0)
+                                {
+                                    throw new Exception($"RDPShell.bat exited with code {batProcess.ExitCode}.");
+                                }
+                                LogDebugMessage("RDPShell.bat completed successfully.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            LogDebugMessage($"Error running RDPShell.bat: {ex.Message}");
+                        }
+                    }
+                    else
+                    {
+                        LogDebugMessage("No RDPShell.bat found. Skipping pre-launch script.");
+                    }
+
+                    
                     if (rdpFiles.Length > 1)
                     {
                         LogDebugMessage($"Found multiple RDP files. Using the first one: {Path.GetFileName(rdpFiles[0])}.");
