@@ -52,6 +52,7 @@ If a script is found, it will be executed and the exit-code checked.  This can b
 for adding any necessary setup conditions, e.g. enabling a wifi or VPN connection.
 Exit your script with a non-zero exit code to trigger a failure and logoff condition.
 This scriupt should be able to run headless with no user input, as it will be hidden.
+Note: There is a hard-coded timeoue of 60 seconds for the pre-launch script to execute.
 
 ## Getting to the Local Desktop
 
