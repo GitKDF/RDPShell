@@ -44,6 +44,16 @@ using that file. If no RDP file is found, it logs the user out.
   briefly upon connection, but then disappear. `Ctrl+Alt+Break` will
   still toggle full screen mode, and closing the RDP window will trigger log off.
 
+## Pre-launch Script
+
+You may create either a PowerShell or a Batch script that will be run before starting
+the RDP session by creating the file RDPShell.(ps1|bat) in the installation folder.
+If a script is found, it will be executed and the exit-code checked.  This can be used
+for adding any necessary setup conditions, e.g. enabling a wifi or VPN connection.
+Exit your script with a non-zero exit code to trigger a failure and logoff condition.
+This scriupt should be able to run headless with no user input, as it will be hidden.
+Note: There is a hard-coded timeoue of 60 seconds for the pre-launch script to execute.
+
 ## Getting to the Local Desktop
 
 To access the normal shell environment (`explorer.exe`) instead of the RDP session, **repeatedly press the Windows key** after entering your login credentials or clicking 'Sign in'.

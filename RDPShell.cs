@@ -90,6 +90,7 @@ public class RDPShell
     private const uint MB_ICONERROR = 0x00000010;
     private const uint MB_ICONWARNING = 0x00000030;
     private const uint MB_ICONINFORMATION = 0x00000040;
+    private const uint MB_TOPMOST = 0x00040000;
     
     // App constants
     private const string AppName = "RDPShell";
@@ -142,6 +143,11 @@ using that file.  If no RDP file is found, it logs the user out.
 
 Feel free to add your own annotation to the filename after RDPShell,
 e.g. the name of the computer you are connecting to.
+
+It will also search for a pre-launch startup script named RDPShell.(ps1|bat)
+and run this script before starting the RDP session.  This can be used for
+setup commands such as wifi or VPN connections.  This script should be able
+to run headless with no user input.
 
 You may want to edit the RDP file manually and change displayconnectionbar:i:1
 to displayconnectionbar:i:0 to disable the connection bar.  It will still show
@@ -285,7 +291,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
                 ShowMessageBox(
                     "Could not initialize console for installer mode.",
                     AppName,
-                    MB_ICONERROR | MB_OK
+                    MB_ICONERROR | MB_OK | MB_TOPMOST
                 );
             }
         }
@@ -296,7 +302,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             ShowMessageBox(
                 "FATAL ERROR: Could not allocate a console for user interaction. Exiting.",
                 AppName,
-                MB_ICONERROR | MB_OK
+                MB_ICONERROR | MB_OK | MB_TOPMOST
             );
             Environment.Exit(ExitCodeFailure);
         }
@@ -384,7 +390,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             ShowMessageBox(
                 $"FATAL ERROR: An unhandled exception occurred.\n\nDetails written to {LogFilePath}",
                 AppName,
-                MB_ICONERROR | MB_OK
+                MB_ICONERROR | MB_OK | MB_TOPMOST
             );
             Environment.Exit(ExitCodeFailure);
         }
@@ -394,118 +400,141 @@ Note: You must log off and log back in for changes to the shell to take effect."
     private static void RunAsShell()
     {
         LogDebugMessage("Entering RunAsShell mode.");
-
+    
         Process? subShellProcess = null;
         bool rdpMode = false;
-
+    
         try
         {
+            // 1. Initial Access Check (Admin Desktop vs. RDP)
             if (IsWinKeyDown())
             {
+                // Normal Shell Mode (Win key is pressed)
                 LogDebugMessage("Windows key detected. Attempting admin credential check.");
-
+    
                 // Attempt to elevate the process just to confirm UAC acceptance
                 if (AttemptAdminCredentialCheck())
                 {
                     LogDebugMessage($"Admin check passed. Launching {DefaultShell}.");
-                    // Launch Explorer directly without elevation
+                    // 2a. Launch Explorer directly without elevation
                     subShellProcess = Process.Start(DefaultShell);
                 }
                 else
                 {
-                    LogDebugMessage("Admin check failed or canceled. Logging off.");
-                    ShowMessageBox(
-                        "You must have or provide administrative privileges to access the local desktop on this account.",
-                        AppName,
-                        MB_ICONERROR | MB_OK
-                    );
+                    // Note: We don't call InitiateLogoff here anymore; the 'finally' block handles it
+                    throw new Exception("Administrative privileges required for local desktop access.");
                 }
             }
             else
             {
-                // Win Key is not pressed (RDP Mode)
+                // RDP Mode Setup (Win Key is not pressed)
                 LogDebugMessage("Windows key not detected. Attempting RDP mode.");
-
                 string[] rdpFiles = Directory.GetFiles(InstallFolderPath, "RDPShell*.rdp", SearchOption.TopDirectoryOnly);
-
-                if (rdpFiles.Length >= 1)
+    
+                if (rdpFiles.Length == 0)
                 {
-                    if (rdpFiles.Length > 1)
+                    throw new Exception($"No RDP file found in '{InstallFolderPath}' matching 'RDPShell*.rdp'.");
+                }
+    
+                // Pre-Launch Script Handling
+                string ps1File = Path.Combine(InstallFolderPath, "RDPShell.ps1");
+                string batFile = Path.Combine(InstallFolderPath, "RDPShell.bat");
+                string? preScript = File.Exists(ps1File) ? ps1File : (File.Exists(batFile) ? batFile : null);
+    
+                if (preScript != null)
+                {
+                    bool isPowerShell = preScript.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase);
+                    string scriptName = Path.GetFileName(preScript);
+                    LogDebugMessage($"Executing pre-launch script: {scriptName}...");
+    
+                    ProcessStartInfo scriptPsi = new ProcessStartInfo
                     {
-                        LogDebugMessage($"Found multiple RDP files. Using the first one: {Path.GetFileName(rdpFiles[0])}.");
-                    } else {
-                        LogDebugMessage($"Found RDP file. Launching mstsc.exe with: {rdpFiles[0]}.");
+                        WorkingDirectory = InstallFolderPath,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardError = true,
+                        FileName = isPowerShell ? "powershell.exe" : "cmd.exe",
+                        Arguments = isPowerShell 
+                            ? $"-NoProfile -ExecutionPolicy Bypass -File \"{preScript}\"" 
+                            : $"/c \"{preScript}\""
+                    };
+    
+                    StringBuilder errorBuilder = new StringBuilder();
+                    using (var scriptProc = new Process { StartInfo = scriptPsi })
+                    {
+                        scriptProc.ErrorDataReceived += (s, e) => { if (e.Data != null) errorBuilder.AppendLine(e.Data); };
+                        
+                        if (!scriptProc.Start()) throw new Exception($"Failed to start {scriptName}");
+                        
+                        scriptProc.BeginErrorReadLine();
+    
+                        if (!scriptProc.WaitForExit(60000))
+                        {
+                            try { scriptProc.Kill(); scriptProc.WaitForExit(1000); } catch { }
+                            throw new Exception($"{scriptName} timed out after 60 seconds.");
+                        }
+    
+                        if (scriptProc.ExitCode != 0)
+                        {
+                            string displayError = errorBuilder.Length > 500 
+                                ? errorBuilder.ToString().Substring(0, 500) + "..." 
+                                : errorBuilder.ToString();
+                            throw new Exception($"{scriptName} exited with code {scriptProc.ExitCode}. {displayError}");
+                        }
+                        LogDebugMessage($"{scriptName} completed successfully.");
                     }
-                    subShellProcess = LaunchRDP(rdpFiles[0]);
-                    rdpMode = true;
                 }
-                else
+
+                if (rdpFiles.Length > 1)
                 {
-                    LogDebugMessage("No RDP file found. Logging off.");
-                    ShowMessageBox(
-                        $"No RDP file found in '{InstallFolderPath}' matching 'RDPShell*.rdp'. Exiting user session now.",
-                        AppName,
-                        MB_ICONWARNING | MB_OK
-                    );
+                    LogDebugMessage($"Found multiple RDP files. Using the first one: {Path.GetFileName(rdpFiles[0])}.");
                 }
+    
+                // 2b. Launch RDP
+                LogDebugMessage($"Launching RDP: {Path.GetFileName(rdpFiles[0])}");
+                subShellProcess = LaunchRDP(rdpFiles[0]);
+                rdpMode = true;
+            }
+    
+            // 3. Monitor the Active Subshell (Explorer or RDP)
+            if (subShellProcess != null)
+            {
+                if (rdpMode)
+                {
+                    RDPSubShellProcess = subShellProcess;
+                    SystemEvents.SessionSwitch += OnSessionSwitch;
+                }
+    
+                subShellProcess.WaitForExit();
+                LogDebugMessage("Subshell process exited normally.");
             }
         }
         catch (Exception ex)
         {
-            LogDebugMessage($"CRITICAL ERROR during shell launch: {ex.Message}");
+            LogDebugMessage($"SHELL FAULT: {ex.Message}");
             ShowMessageBox(
-                $"Critical Error during sub-shell launch: {ex.Message}. Logging off now.",
+                $"Shell Error: {ex.Message}\n\nThe session will now log off.",
                 AppName,
-                MB_ICONERROR | MB_OK
+                MB_ICONERROR | MB_OK | MB_TOPMOST
             );
-            InitiateLogoff();
-            return;
         }
-
-        // 2. Monitor the Subshell Process (Only if a process was started)
-        if (subShellProcess != null)
+        finally
         {
-            LogDebugMessage($"Monitoring subshell process ID: {subShellProcess.Id}");
-
-            if (rdpMode)
-            {
-                // RDP Mode: Set global process and register the event handler for cleanup
-                RDPSubShellProcess = subShellProcess;
-                SystemEvents.SessionSwitch += OnSessionSwitch;
-                LogDebugMessage("SessionSwitch event listener registered for RDP mode.");
-            }
-
-            // Simplified monitoring loop: block until the subshell process exits.
-            try
-            {
-                subShellProcess.WaitForExit();
-            }
-            catch (InvalidOperationException)
-            {
-                // Process may have already exited and been disposed by an external event (e.g., logoff triggered by CleanupLoop).
-                LogDebugMessage("Subshell process was already disposed or exited.");
-            }
-
-            LogDebugMessage("Subshell process exited.");
-
-            // Clean up RDP resources and event handler
+            // 4. Cleanup & Final Logoff
+            // This block is guaranteed to run, ensuring the user is never stuck.
+            LogDebugMessage("Executing final shell cleanup and logoff.");
+    
             if (rdpMode)
             {
                 SystemEvents.SessionSwitch -= OnSessionSwitch;
-                CleanupCts?.Cancel(); // Ensure the cleanup loop stops if it's running
-                CleanupCts?.Dispose();
+                CleanupCts?.Cancel();
                 RDPSubShellProcess?.Dispose();
                 RDPSubShellProcess = null;
-                LogDebugMessage("SessionSwitch event listener unregistered.");
             }
+    
+            InitiateLogoff();
+            Environment.Exit(ExitCodeSuccess);
         }
-
-        // 3. Exit the shell process.
-        LogDebugMessage("Subshell exited. Initiating session logoff.");
-        // Use silent logoff helper
-        InitiateLogoff();
-
-        Environment.Exit(ExitCodeSuccess);
     }
 
     // --- ASYNCHRONOUS SESSION SWITCH HANDLER ---
@@ -680,7 +709,7 @@ Note: You must log off and log back in for changes to the shell to take effect."
             ShowMessageBox(
                 $"Unexpected error during credential check: {ex.Message}",
                 AppName,
-                MB_ICONERROR | MB_OK
+                MB_ICONERROR | MB_OK | MB_TOPMOST
             );
             return false;
         }
